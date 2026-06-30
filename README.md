@@ -2,6 +2,8 @@
 
 > Real-time stock monitor in the terminal — A-shares, HK, and US markets.
 
+[中文](README_CN.md)
+
 ![Stock Watcher TUI](docs/image.png)
 
 ## Features

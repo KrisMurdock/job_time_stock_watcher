@@ -2,6 +2,8 @@
 
 > 终端里的实时股票行情看板 — 支持 A 股、港股、美股。
 
+[English](README.md)
+
 ![Stock Watcher TUI](docs/image.png)
 
 ## 功能特性
