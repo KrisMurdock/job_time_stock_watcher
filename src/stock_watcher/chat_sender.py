@@ -38,6 +38,39 @@ def _build_card_md_row(label: str, value: str) -> dict:
     }
 
 
+def _color_pct(pct: float | None) -> str:
+    """Return color-tagged change percent string for lark_md."""
+    if pct is None:
+        return "—"
+    color = "red" if pct >= 0 else "green"
+    return f"<font color='{color}'>{pct:+.2f}%</font>"
+
+
+def _color_price(price: float | None, pct: float | None) -> str:
+    """Return price string coloured by direction."""
+    if price is None:
+        return "—"
+    if pct is None:
+        return f"{price:.2f}"
+    color = "red" if pct >= 0 else "green"
+    return f"<font color='{color}'>**{price:.2f}**</font>"
+
+
+def _column_set(fields: list[tuple[str, str]]) -> dict:
+    """Build a Feishu column_set element from (label, value) pairs."""
+    columns = []
+    for label, value in fields:
+        columns.append({
+            "tag": "column",
+            "width": "weighted",
+            "weight": 1,
+            "elements": [
+                {"tag": "div", "text": {"tag": "lark_md", "content": f"**{label}**\n{value}"}},
+            ],
+        })
+    return {"tag": "column_set", "flex_mode": "bisect", "columns": columns}
+
+
 # ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
@@ -54,22 +87,28 @@ def build_alert_card(
     now_str = dt.datetime.now(dt.timezone(dt.timedelta(hours=8))).strftime(
         "%Y-%m-%d %H:%M:%S"
     )
-    pct_str = f"{change_pct:+.2f}%" if change_pct is not None else "—"
+    pct_str = _color_pct(change_pct)
+    price_str = _color_price(price, change_pct)
 
     elements = [
-        _build_card_md_row("代码", code),
-        _build_card_md_row("名称", name),
-        _build_card_md_row("现价", f"{price:.2f}"),
-        _build_card_md_row("触发条件", rule_desc),
-        {"tag": "hr"},
-        _build_card_md_row("涨跌幅", pct_str),
-        _build_card_md_row("时间", now_str),
+        _column_set([
+            ("📌 代码", code),
+            ("💰 现价", price_str),
+        ]),
+        _column_set([
+            ("📛 名称", name),
+            ("📈 涨跌幅", pct_str),
+        ]),
+        _column_set([
+            ("🎯 触发条件", rule_desc),
+            ("🕐 时间", now_str),
+        ]),
     ]
 
     return {
         "msg_type": "interactive",
         "card": {
-            "header": _build_card_header("⚠️ 股票告警", "red"),
+            "header": _build_card_header("🚨 股票告警触发", "red"),
             "elements": elements,
         },
     }
@@ -83,35 +122,49 @@ def build_summary_card(
     from stock_watcher.models import Position
 
     positions = positions or {}
+    has_positions = any(p.is_valid for p in positions.values())
     now_str = dt.datetime.now(dt.timezone(dt.timedelta(hours=8))).strftime(
         "%Y-%m-%d %H:%M"
     )
-    lines: list[str] = []
-    has_positions = any(p.is_valid for p in positions.values())
 
-    # Header
+    # Build row lines in monospace-friendly format
     if has_positions:
-        header = "代码  名称  现价  涨跌幅  持仓  可用  成本  市值"
+        header_line = "代码      名称      现价      涨跌幅      持仓     可用     成本      市值"
+        sep_line    = "────  ────  ──────  ──────  ────  ────  ──────  ────────"
     else:
-        header = "代码  名称  现价  涨跌幅"
+        header_line = "代码      名称      现价      涨跌幅"
+        sep_line    = "────  ────  ──────  ──────"
 
-    lines.append(header)
+    lines = [header_line, sep_line]
+
+    total_mval = 0.0
 
     for code, q in sorted(quotes.items()):
-        pct = f"{q.change_pct:+.2f}%" if q.change_pct is not None else "—"
-        price = f"{q.price:.2f}" if q.price is not None else "—"
-        name = q.name or "—"
-        row = f"{code}  {name}  **{price}**  {pct}"
+        pct_str = _color_pct(q.change_pct)
+        price = f"{q.price:>6.2f}" if q.price is not None else "     —"
+        name = (q.name or "—").ljust(4)[:4]
+
+        row = f"{code:10s} {name:4s} {price}  {pct_str}"
 
         if has_positions:
             pos = positions.get(code)
-            qty = str(pos.quantity) if pos and pos.is_valid else "—"
-            avail = str(pos.available) if pos and pos.is_valid else "—"
-            cost = f"{pos.cost:.2f}" if pos and pos.is_valid else "—"
-            mval = f"{pos.market_value(q.price or 0):.0f}" if pos and pos.is_valid and q.price else "—"
-            row += f"  {qty}股  {avail}股  {cost}  {mval}"
+            if pos and pos.is_valid and q.price:
+                qty = f"{pos.quantity:>4d}"
+                avail = f"{pos.available:>4d}"
+                cost = f"{pos.cost:>6.2f}"
+                mval = pos.market_value(q.price)
+                mval_str = f"{mval:>8.0f}"
+                total_mval += mval
+                row += f"  {qty}  {avail}  {cost}  {mval_str}"
+            else:
+                row += "     —      —       —         —"
 
         lines.append(row)
+
+    # Stats block
+    if has_positions and total_mval > 0:
+        lines.append("")
+        lines.append(f"📊 **持仓总市值：{total_mval:,.0f} 元**")
 
     elements = [
         {
