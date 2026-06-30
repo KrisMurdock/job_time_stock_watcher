@@ -798,7 +798,6 @@ class StockWatcherApp(App):
         # Alert rules loaded from config
         self._alerts: list[AlertRule] = list(self._cfg.alerts)
         self._positions: dict[str, Position] = dict(self._cfg.positions)
-        self._email_cfg = self._cfg.email
         self._chat_cfg = self._cfg.chat
         self._update_alert_codes()
         self._table.set_positions(self._positions)
@@ -973,25 +972,14 @@ class StockWatcherApp(App):
             if elapsed < interval:
                 continue
 
-            # Push summary via email + Feishu
-            pushed = False
-
-            if self._email_cfg and self._email_cfg.is_configured:
-                from stock_watcher.email_sender import build_summary_email, send_email
-
-                subject, html = build_summary_email(self._latest_quotes, self._positions)
-                ok = await send_email(self._email_cfg, subject, html)
-                pushed = pushed or ok
-
+            # Push summary via Feishu
             if self._chat_cfg and self._chat_cfg.is_configured:
                 from stock_watcher.chat_sender import build_summary_card, send_feishu_card
 
                 card = build_summary_card(self._latest_quotes, self._positions)
                 ok = await send_feishu_card(self._chat_cfg, card)
-                pushed = pushed or ok
-
-            if pushed:
-                last_push = time.monotonic()
+                if ok:
+                    last_push = time.monotonic()
 
     def _update_status(self) -> None:
         sb = self._status_bar
@@ -1091,7 +1079,6 @@ class StockWatcherApp(App):
         self._poll_interval = new_cfg.poll_interval
         self._backoff = MarketBackoffManager(new_cfg.backoff)
         self._cfg = new_cfg  # keep settings panel in sync
-        self._email_cfg = new_cfg.email
         self._chat_cfg = new_cfg.chat
 
         if added or removed:
@@ -1490,18 +1477,6 @@ class StockWatcherApp(App):
                 )
             except Exception:
                 pass
-
-        # Email notification (non-blocking, fire-and-forget)
-        if self._email_cfg and self._email_cfg.is_configured:
-            from stock_watcher.email_sender import build_alert_email, send_email
-
-            subject, html = build_alert_email(
-                alert.code, quote.name or alert.code, alert.describe(), quote.price or 0
-            )
-            # Launch as background task so SMTP failure doesn't block the UI
-            asyncio.create_task(
-                send_email(self._email_cfg, subject, html)
-            )
 
         # Feishu webhook notification (non-blocking)
         if self._chat_cfg and self._chat_cfg.is_configured:
