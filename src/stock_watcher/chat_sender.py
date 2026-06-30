@@ -75,17 +75,42 @@ def build_alert_card(
     }
 
 
-def build_summary_card(quotes: dict[str, StockQuote]) -> dict:
-    """Build a Feishu interactive card for daily summary."""
+def build_summary_card(
+    quotes: dict[str, StockQuote],
+    positions: dict[str, "Position"] | None = None,
+) -> dict:
+    """Build a Feishu interactive card for daily summary with positions."""
+    from stock_watcher.models import Position
+
+    positions = positions or {}
     now_str = dt.datetime.now(dt.timezone(dt.timedelta(hours=8))).strftime(
         "%Y-%m-%d %H:%M"
     )
     lines: list[str] = []
+    has_positions = any(p.is_valid for p in positions.values())
+
+    # Header
+    if has_positions:
+        header = "代码  名称  现价  涨跌幅  持仓  成本  市值"
+    else:
+        header = "代码  名称  现价  涨跌幅"
+
+    lines.append(header)
+
     for code, q in sorted(quotes.items()):
         pct = f"{q.change_pct:+.2f}%" if q.change_pct is not None else "—"
         price = f"{q.price:.2f}" if q.price is not None else "—"
         name = q.name or "—"
-        lines.append(f"{code}  {name}  **{price}**  {pct}")
+        row = f"{code}  {name}  **{price}**  {pct}"
+
+        if has_positions:
+            pos = positions.get(code)
+            qty = str(pos.quantity) if pos and pos.is_valid else "—"
+            cost = f"{pos.cost:.2f}" if pos and pos.is_valid else "—"
+            mval = f"{pos.market_value(q.price or 0):.0f}" if pos and pos.is_valid and q.price else "—"
+            row += f"  {qty}股  {cost}  {mval}"
+
+        lines.append(row)
 
     elements = [
         {

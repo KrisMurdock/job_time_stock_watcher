@@ -922,7 +922,7 @@ class StockWatcherApp(App):
 
             from stock_watcher.email_sender import build_summary_email, send_email
 
-            subject, html = build_summary_email(self._latest_quotes)
+            subject, html = build_summary_email(self._latest_quotes, self._positions)
             ok = await send_email(self._email_cfg, subject, html)
             if ok:
                 _sent_today = today_str
@@ -931,7 +931,7 @@ class StockWatcherApp(App):
             if self._chat_cfg and self._chat_cfg.is_configured:
                 from stock_watcher.chat_sender import build_summary_card, send_feishu_card
 
-                card = build_summary_card(self._latest_quotes)
+                card = build_summary_card(self._latest_quotes, self._positions)
                 await send_feishu_card(self._chat_cfg, card)
 
     def _update_status(self) -> None:

@@ -30,8 +30,20 @@ def _build_alert_html(code: str, name: str, rule_desc: str, price: float) -> str
     """)
 
 
-def _build_summary_html(quotes: dict[str, StockQuote]) -> str:
-    """Build HTML daily summary of all monitored stocks."""
+def _build_summary_html(
+    quotes: dict[str, StockQuote],
+    positions: dict[str, "Position"] | None = None,
+) -> str:
+    """Build HTML daily summary of all monitored stocks with positions."""
+    from stock_watcher.models import Position
+
+    positions = positions or {}
+    has_positions = any(p.is_valid for p in positions.values())
+
+    hdr = "<th>代码</th><th>名称</th><th>现价</th><th>涨跌幅</th>"
+    if has_positions:
+        hdr += "<th>持仓</th><th>成本</th><th>市值</th><th>盈亏</th>"
+
     rows = ""
     for code, q in sorted(quotes.items()):
         pct = f"{q.change_pct:+.2f}%" if q.change_pct is not None else "—"
@@ -40,8 +52,26 @@ def _build_summary_html(quotes: dict[str, StockQuote]) -> str:
         rows += f"""<tr>
             <td>{html.escape(code)}</td><td>{html.escape(q.name or "—")}</td>
             <td>{price}</td>
-            <td style="color:{color}">{html.escape(pct)}</td>
-        </tr>\n"""
+            <td style="color:{color}">{html.escape(pct)}</td>"""
+
+        if has_positions:
+            pos = positions.get(code)
+            if pos and pos.is_valid:
+                qty = str(pos.quantity)
+                cost = f"{pos.cost:.2f}"
+                mval = f"{pos.market_value(q.price or 0):.0f}"
+                pnl_val = pos.pnl(q.price or 0)
+                pnl_str = f"{pnl_val:+.0f}"
+                pnl_color = "#27ae60" if pnl_val >= 0 else "#e74c3c"
+                rows += f"""
+            <td>{qty}股</td>
+            <td>{cost}</td>
+            <td>{mval}</td>
+            <td style="color:{pnl_color}">{pnl_str}</td>"""
+            else:
+                rows += "<td>—</td><td>—</td><td>—</td><td>—</td>"
+
+        rows += "\n</tr>\n"
 
     return textwrap.dedent(f"""\
     <html><body style="font-family:sans-serif">
@@ -49,7 +79,7 @@ def _build_summary_html(quotes: dict[str, StockQuote]) -> str:
       <p>{dt.datetime.now().strftime("%Y-%m-%d %H:%M")}</p>
       <table style="border-collapse:collapse;width:100%" border="1" cellpadding="4">
         <tr style="background:#f0f0f0">
-          <th>代码</th><th>名称</th><th>现价</th><th>涨跌幅</th>
+          {hdr}
         </tr>
         {rows}
       </table>
@@ -135,9 +165,10 @@ def build_alert_email(
 
 def build_summary_email(
     quotes: dict[str, StockQuote],
+    positions: dict[str, "Position"] | None = None,
 ) -> tuple[str, str]:
     """Return (subject, html_body) for a daily summary email."""
     date_str = dt.datetime.now().strftime("%Y-%m-%d")
     subject = f"📊 股票监控日报 — {date_str}"
-    body = _build_summary_html(quotes)
+    body = _build_summary_html(quotes, positions)
     return subject, body
