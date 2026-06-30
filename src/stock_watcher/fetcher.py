@@ -106,13 +106,13 @@ def parse_tencent_response(code: str, text: str) -> StockQuote:
       3: current price
       4: yesterday close
       5: open
-      6: change amount (volume in some versions, but 6=amount in v2)
-      31: change pct
+      6: change amount (direct, when available)
+      32: change percent
       33: high
       34: low
 
-    We extract: name(1), price(3), high(33), low(34).
-    change_pct from field 31, change_amount from field 6 or derived.
+    Falls back to deriving change from price vs yesterday close
+    when direct fields are unavailable.
     """
     try:
         text = text.strip()

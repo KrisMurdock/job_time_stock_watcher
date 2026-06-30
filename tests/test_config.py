@@ -22,25 +22,25 @@ class TestBackoffConfig:
     def test_defaults(self):
         b = BackoffConfig()
         assert b.base == 5
-        assert b.max == 120
+        assert b.max_delay == 120
         assert b.multiplier == 2
 
     def test_from_dict(self):
         b = BackoffConfig.from_dict({"base": 10, "max": 60, "multiplier": 3})
         assert b.base == 10
-        assert b.max == 60
+        assert b.max_delay == 60
         assert b.multiplier == 3
 
     def test_from_dict_partial_fills_defaults(self):
         b = BackoffConfig.from_dict({"base": 8})
         assert b.base == 8
-        assert b.max == 120
+        assert b.max_delay == 120
         assert b.multiplier == 2
 
     def test_from_empty_dict_uses_defaults(self):
         b = BackoffConfig.from_dict({})
         assert b.base == 5
-        assert b.max == 120
+        assert b.max_delay == 120
 
 
 # ---------------------------------------------------------------------------

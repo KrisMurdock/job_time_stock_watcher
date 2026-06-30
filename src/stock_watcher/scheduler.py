@@ -6,6 +6,7 @@ import datetime as dt
 import random
 from typing import Optional
 
+from stock_watcher.config import BackoffConfig
 from stock_watcher.models import Market
 
 # ---------------------------------------------------------------------------
@@ -119,6 +120,15 @@ class BackoffController:
         self._multiplier = multiplier
         self._failures: int = 0
 
+    @classmethod
+    def from_config(cls, config: "BackoffConfig") -> "BackoffController":
+        """Create a BackoffController from a BackoffConfig."""
+        return cls(
+            base=config.base,
+            max_delay=config.max_delay,
+            multiplier=config.multiplier,
+        )
+
     @property
     def consecutive_failures(self) -> int:
         return self._failures
@@ -186,8 +196,10 @@ class PollQueue:
         if code in self._codes:
             idx = self._codes.index(code)
             self._codes.remove(code)
-            # Adjust index so we don't skip an element
-            if self._codes and self._index > idx:
+            # Adjust index so we don't skip the next element
+            if self._codes and idx < self._index:
+                self._index -= 1
+            elif self._codes:
                 self._index = self._index % len(self._codes)
 
     def has(self, code: str) -> bool:

@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import random
-from copy import deepcopy
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -25,14 +24,14 @@ class BackoffConfig:
     """Exponential-backoff parameters for failed requests."""
 
     base: float = 5.0
-    max: float = 120.0
+    max_delay: float = 120.0
     multiplier: float = 2.0
 
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> "BackoffConfig":
         return cls(
             base=float(d.get("base", 5)),
-            max=float(d.get("max", 120)),
+            max_delay=float(d.get("max", d.get("max_delay", 120))),
             multiplier=float(d.get("multiplier", 2)),
         )
 

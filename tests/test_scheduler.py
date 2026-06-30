@@ -183,6 +183,14 @@ class TestBackoffController:
         delay = bc.get_delay()
         assert 15.0 <= delay <= 25.0
 
+    def test_from_config_wires_values(self):
+        from stock_watcher.config import BackoffConfig
+        cfg = BackoffConfig(base=7, max_delay=90, multiplier=3)
+        bc = BackoffController.from_config(cfg)
+        assert bc._base == 7
+        assert bc._max == 90
+        assert bc._multiplier == 3
+
 
 # ---------------------------------------------------------------------------
 # PollQueue
