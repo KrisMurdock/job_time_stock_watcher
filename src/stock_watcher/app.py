@@ -225,21 +225,30 @@ class StockTable(DataTable):
         self._positions: dict[str, "Position"] = {}
         # Privacy mode: row_key → 1-based disguise index
         self._privacy_index: dict[str, int] = {}
+        # Cached quotes for row rebuild (privacy toggle, re-sort, etc.)
+        self._quotes: dict[str, StockQuote] = {}
 
     def set_positions(self, positions: dict[str, "Position"]) -> None:
         self._positions = positions
 
     def watch_privacy_mode(self, value: bool) -> None:
         """Re-render all rows and column labels when privacy mode toggles."""
-        labels = self._PRIVACY_LABELS if value else self._COLUMN_LABELS
-        for col_key, label in labels.items():
-            self._update_column_label(col_key, label)
-        # Rebuild privacy index based on ordered_rows
+        # Switch column labels by matching current label text
+        if value:
+            src, dst = self._COLUMN_LABELS, self._PRIVACY_LABELS
+        else:
+            src, dst = self._PRIVACY_LABELS, self._COLUMN_LABELS
+        for orig_key, src_label in src.items():
+            self._update_column_label(src_label, dst[orig_key])
+
+        # Build stable privacy index from current ordered_rows BEFORE re-rendering
         self._privacy_index = {}
         if value and self.row_count > 0:
             for i, row_key in enumerate(self.ordered_rows, start=1):
-                self._privacy_index[str(row_key)] = i
-        self.refresh()
+                self._privacy_index[str(row_key.key.value)] = i
+        # Re-render every cached row so disguise applies to all data
+        for quote in self._quotes.values():
+            self.update_quote(quote)
 
     def on_mount(self) -> None:
         self.add_columns(
@@ -267,6 +276,7 @@ class StockTable(DataTable):
     def update_quote(self, quote: StockQuote) -> None:
         """Insert or update a row for the given quote."""
         row_key = quote.code
+        self._quotes[row_key] = quote  # cache for privacy toggle rebuild
         pos = self._positions.get(row_key)
 
         if self.privacy_mode:
@@ -401,9 +411,9 @@ class StockTable(DataTable):
         self._update_column_label(label_key, active_labels[label_key])
 
     def _update_column_label(self, col_key: str, label: str) -> None:
-        """Update a column header label in-place."""
+        """Update a column header label in-place by matching current label text."""
         for column in self.columns.values():
-            if str(column.key) == col_key:
+            if str(column.label) == col_key:
                 column.label = label
                 return
 
@@ -413,6 +423,7 @@ class StockTable(DataTable):
         except Exception:
             pass
         self._raw.pop(key, None)
+        self._quotes.pop(key, None)
 
     def get_highlighted_key(self) -> Optional[str]:
         if self.row_count == 0:
@@ -845,8 +856,6 @@ class StockWatcherApp(App):
             self._positions_mtime = os.path.getmtime(pos_path)
         except OSError:
             pass
-            self.exit()
-            return
 
         self._calendar = TradingCalendar()
         self._queue = PollQueue(list(self._cfg.watchlist))
@@ -868,6 +877,7 @@ class StockWatcherApp(App):
         self._alerts: list[AlertRule] = list(self._cfg.alerts)
         self._positions: dict[str, Position] = dict(self._cfg.positions)
         self._chat_cfg = self._cfg.chat
+        self._deepseek_cfg = self._cfg.deepseek
         self._update_alert_codes()
         self._table.set_positions(self._positions)
 
@@ -881,6 +891,7 @@ class StockWatcherApp(App):
 
         self._poll_loop()
         self._daily_summary_loop()
+        self._bot_server_loop()
 
     # ------------------------------------------------------------------
     # Column sort
@@ -1068,8 +1079,8 @@ class StockWatcherApp(App):
             sb.status += f" 退避{self._backoff.max_delay:.0f}s"
 
         if self._privacy_mode:
-            sb.status += "  🔒"
-            sb.total = len(self._queue.all_codes)
+            sb.status = "工作中"
+            sb.total = 0
             sb.up_count = 0
             sb.down_count = 0
             sb.flat_count = 0

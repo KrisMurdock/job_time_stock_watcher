@@ -70,30 +70,71 @@ class RequestConfig:
 
 @dataclass
 class ChatConfig:
-    """Chat bot webhook configuration."""
+    """Chat bot configuration — webhook (push) + full bot (receive & reply)."""
 
-    feishu_webhook: str = ""   # Feishu custom bot webhook URL
-    feishu_secret: str = ""    # optional HMAC-SHA256 signing secret
+    # Webhook (out-bound only)
+    feishu_webhook: str = ""
+    feishu_secret: str = ""
+
+    # Full bot credentials (for WebSocket event receiving + API calls)
+    feishu_app_id: str = ""
+    feishu_app_secret: str = ""
 
     @property
     def is_configured(self) -> bool:
-        """Return True if at least the webhook URL is set."""
         return bool(self.feishu_webhook)
+
+    @property
+    def can_receive(self) -> bool:
+        """True when the bot can receive @messages via WebSocket."""
+        return bool(self.feishu_app_id and self.feishu_app_secret)
 
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> "ChatConfig":
         return cls(
             feishu_webhook=str(d.get("feishu_webhook", "")),
             feishu_secret=str(d.get("feishu_secret", "")),
+            feishu_app_id=str(d.get("feishu_app_id", "")),
+            feishu_app_secret=str(d.get("feishu_app_secret", "")),
         )
 
     def to_dict(self) -> dict[str, Any]:
         return {
             "feishu_webhook": self.feishu_webhook,
             "feishu_secret": self.feishu_secret,
+            "feishu_app_id": self.feishu_app_id,
+            "feishu_app_secret": self.feishu_app_secret,
         }
 
 
+
+
+@dataclass
+class DeepSeekConfig:
+    """DeepSeek API for AI-powered chat replies."""
+
+    api_key: str = ""
+    api_base: str = "https://api.deepseek.com"
+    model: str = "deepseek-chat"
+
+    @property
+    def is_configured(self) -> bool:
+        return bool(self.api_key)
+
+    @classmethod
+    def from_dict(cls, d: dict[str, Any]) -> "DeepSeekConfig":
+        return cls(
+            api_key=str(d.get("api_key", "")),
+            api_base=str(d.get("api_base", "https://api.deepseek.com")),
+            model=str(d.get("model", "deepseek-chat")),
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "api_key": self.api_key,
+            "api_base": self.api_base,
+            "model": self.model,
+        }
 
 
 @dataclass
@@ -109,6 +150,7 @@ class AppConfig:
     positions: dict[str, Position] = field(default_factory=dict)
     alert_sound_command: str = ""
     chat: Optional[ChatConfig] = None
+    deepseek: Optional[DeepSeekConfig] = None
 
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> "AppConfig":
@@ -123,6 +165,7 @@ class AppConfig:
             positions={k: Position.from_config(v) for k, v in pos_raw.items()},
             alert_sound_command=str(d.get("alert_sound_command", "")),
             chat=ChatConfig.from_dict(d.get("chat", {})) if d.get("chat") else None,
+            deepseek=DeepSeekConfig.from_dict(d.get("deepseek", {})) if d.get("deepseek") else None,
         )
 
 
