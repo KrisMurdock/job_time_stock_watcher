@@ -123,9 +123,10 @@ class DeepSeekConfig:
 
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> "DeepSeekConfig":
+        base = d.get("base_url") or d.get("api_base") or "https://api.deepseek.com"
         return cls(
             api_key=str(d.get("api_key", "")),
-            api_base=str(d.get("api_base", "https://api.deepseek.com")),
+            api_base=str(base),
             model=str(d.get("model", "deepseek-chat")),
         )
 

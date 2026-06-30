@@ -122,7 +122,7 @@ async def ask_deepseek(
     if not cfg.is_configured:
         return "请先配置 DeepSeek API Key (config.yaml → deepseek → api_key)"
 
-    url = f"{cfg.api_base.rstrip('/')}/v1/chat/completions"
+    url = f"{cfg.api_base.rstrip('/')}/chat/completions"
 
     messages = [
         {"role": "system", "content": _SYSTEM_PROMPT},
