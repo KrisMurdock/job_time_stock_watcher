@@ -1,7 +1,7 @@
 """Unit tests for stock_watcher.models."""
 
 import pytest
-from stock_watcher.models import Market, StockQuote, WatchlistItem
+from stock_watcher.models import Market, StockQuote, WatchlistItem, AlertRule, AlertType
 
 
 class TestMarket:
@@ -173,3 +173,87 @@ class TestWatchlistItem:
     def test_parse_from_config_with_spaces(self):
         item = WatchlistItem.from_config("  sh000001  ")
         assert item.code == "sh000001"
+
+
+# ---------------------------------------------------------------------------
+# AlertRule
+# ---------------------------------------------------------------------------
+
+
+class TestAlertRule:
+    """Alert rule creation and checking."""
+
+    def test_price_above_fires(self):
+        rule = AlertRule(code="hk00700", alert_type=AlertType.PRICE_ABOVE, value=450.0)
+        q = StockQuote(code="hk00700", price=451.0)
+        assert rule.check(q) is True
+
+    def test_price_above_not_fires(self):
+        rule = AlertRule(code="hk00700", alert_type=AlertType.PRICE_ABOVE, value=450.0)
+        q = StockQuote(code="hk00700", price=449.0)
+        assert rule.check(q) is False
+
+    def test_price_below_fires(self):
+        rule = AlertRule(code="hk00700", alert_type=AlertType.PRICE_BELOW, value=400.0)
+        q = StockQuote(code="hk00700", price=399.0)
+        assert rule.check(q) is True
+
+    def test_price_below_not_fires(self):
+        rule = AlertRule(code="hk00700", alert_type=AlertType.PRICE_BELOW, value=400.0)
+        q = StockQuote(code="hk00700", price=401.0)
+        assert rule.check(q) is False
+
+    def test_pct_above_fires(self):
+        rule = AlertRule(code="hk00700", alert_type=AlertType.PCT_ABOVE, value=5.0)
+        q = StockQuote(code="hk00700", change_pct=5.5)
+        assert rule.check(q) is True
+
+    def test_pct_above_not_fires(self):
+        rule = AlertRule(code="hk00700", alert_type=AlertType.PCT_ABOVE, value=5.0)
+        q = StockQuote(code="hk00700", change_pct=4.9)
+        assert rule.check(q) is False
+
+    def test_pct_below_fires(self):
+        rule = AlertRule(code="hk00700", alert_type=AlertType.PCT_BELOW, value=3.0)
+        q = StockQuote(code="hk00700", change_pct=-3.5)
+        assert rule.check(q) is True
+
+    def test_pct_below_not_fires_positive(self):
+        rule = AlertRule(code="hk00700", alert_type=AlertType.PCT_BELOW, value=3.0)
+        q = StockQuote(code="hk00700", change_pct=3.5)
+        assert rule.check(q) is False
+
+    def test_invalid_quote_does_not_fire(self):
+        rule = AlertRule(code="hk00700", alert_type=AlertType.PRICE_ABOVE, value=450.0)
+        q = StockQuote(code="hk00700")  # no price
+        assert rule.check(q) is False
+
+    def test_describe_price(self):
+        rule = AlertRule(code="hk00700", alert_type=AlertType.PRICE_ABOVE, value=450.0)
+        assert "价格上破" in rule.describe()
+        assert "450.0" in rule.describe()
+
+    def test_describe_pct(self):
+        rule = AlertRule(code="hk00700", alert_type=AlertType.PCT_ABOVE, value=5.0)
+        assert "涨幅超" in rule.describe()
+        assert "5.0%" in rule.describe()
+
+    def test_to_config_dict(self):
+        rule = AlertRule(code="hk00700", alert_type=AlertType.PRICE_ABOVE, value=450.0)
+        d = rule.to_config_dict()
+        assert d == {"code": "hk00700", "type": "price_above", "value": 450.0}
+
+    def test_from_config_dict(self):
+        rule = AlertRule.from_config_dict({"code": "hk00700", "type": "price_above", "value": 450.0})
+        assert rule.code == "hk00700"
+        assert rule.alert_type == AlertType.PRICE_ABOVE
+        assert rule.value == 450.0
+        assert rule.triggered is False
+
+    def test_triggered_flag_prevents_repeat(self):
+        """Once triggered, should not fire again until condition clears."""
+        rule = AlertRule(code="hk00700", alert_type=AlertType.PRICE_ABOVE, value=450.0, triggered=True)
+        q = StockQuote(code="hk00700", price=460.0)
+        # check() still returns True (condition met), but caller should respect triggered flag
+        assert rule.check(q) is True
+        assert rule.triggered is True  # stays triggered

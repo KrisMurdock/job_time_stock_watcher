@@ -99,3 +99,69 @@ class WatchlistItem:
     def from_config(cls, raw: str) -> "WatchlistItem":
         """Deserialize from a config string."""
         return cls(code=raw.strip())
+
+
+# ---------------------------------------------------------------------------
+# Alert rule
+# ---------------------------------------------------------------------------
+
+
+class AlertType(Enum):
+    PRICE_ABOVE = "price_above"
+    PRICE_BELOW = "price_below"
+    PCT_ABOVE = "pct_above"
+    PCT_BELOW = "pct_below"
+
+
+@dataclass
+class AlertRule:
+    """A price or change-% alert for a specific stock."""
+
+    code: str
+    alert_type: AlertType
+    value: float
+    triggered: bool = False
+
+    def check(self, quote: StockQuote) -> bool:
+        """Return True if this alert should fire for the given quote."""
+        if self.alert_type in (AlertType.PRICE_ABOVE, AlertType.PRICE_BELOW):
+            if quote.price is None:
+                return False
+            if self.alert_type == AlertType.PRICE_ABOVE:
+                return quote.price >= self.value
+            else:
+                return quote.price <= self.value
+        elif self.alert_type in (AlertType.PCT_ABOVE, AlertType.PCT_BELOW):
+            if quote.change_pct is None:
+                return False
+            if self.alert_type == AlertType.PCT_ABOVE:
+                return quote.change_pct >= self.value
+            else:
+                return quote.change_pct < 0 and abs(quote.change_pct) >= self.value
+        return False
+
+    def describe(self) -> str:
+        """Human-readable alert description."""
+        labels = {
+            AlertType.PRICE_ABOVE: "价格上破",
+            AlertType.PRICE_BELOW: "价格下破",
+            AlertType.PCT_ABOVE: "涨幅超",
+            AlertType.PCT_BELOW: "跌幅超",
+        }
+        suffix = "%" if self.alert_type in (AlertType.PCT_ABOVE, AlertType.PCT_BELOW) else ""
+        return f"{labels[self.alert_type]} {self.value}{suffix}"
+
+    def to_config_dict(self) -> dict:
+        return {
+            "code": self.code,
+            "type": self.alert_type.value,
+            "value": self.value,
+        }
+
+    @classmethod
+    def from_config_dict(cls, d: dict) -> "AlertRule":
+        return cls(
+            code=str(d["code"]).strip().lower(),
+            alert_type=AlertType(d["type"]),
+            value=float(d["value"]),
+        )

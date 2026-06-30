@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import datetime as dt
+import subprocess
 import time
 from pathlib import Path
 from typing import Optional
@@ -23,9 +24,9 @@ from textual.widgets import (
 )
 from textual.binding import Binding
 
-from stock_watcher.config import load_config, save_watchlist, RequestConfig
+from stock_watcher.config import load_config, save_watchlist, save_alerts, RequestConfig
 from stock_watcher.fetcher import get_fetcher, FetchError, search_stocks, SearchResult
-from stock_watcher.models import StockQuote, Market
+from stock_watcher.models import StockQuote, Market, AlertRule, AlertType
 from stock_watcher.scheduler import (
     PollQueue,
     BackoffController,
@@ -301,6 +302,7 @@ class StockWatcherApp(App):
     BINDINGS = [
         Binding("a", "add_stock", "添加"),
         Binding("d", "delete_stock", "删除"),
+        Binding("t", "set_alert", "告警"),
         Binding("r", "manual_refresh", "刷新"),
         Binding("q", "quit", "退出"),
         Binding("escape", "cancel_prompt", "取消", show=False),
@@ -342,12 +344,17 @@ class StockWatcherApp(App):
         self._status_bar: StatusBar = self.query_one(StatusBar)
         self._prompt_container: Vertical = self.query_one("#prompt_container")
         self._prompt_input: Input = self.query_one("#prompt_input")
+        self._prompt_label: Label = self.query_one("#prompt_label")
         self._search_list: ListView = self.query_one("#search_list")
 
         # Holds the latest quote for every stock (code → StockQuote)
         self._latest_quotes: dict[str, StockQuote] = {}
 
+        # Alert rules loaded from config
+        self._alerts: list[AlertRule] = list(self._cfg.alerts)
+
         self._prompt_mode: Optional[str] = None
+        self._alert_target: Optional[str] = None  # stock code for alert setup
         self._search_results: list[SearchResult] = []
         self._stopped = False
 
@@ -359,7 +366,7 @@ class StockWatcherApp(App):
 
     def check_action(self, action: str, parameters: tuple[object, ...]) -> bool | None:
         if self._prompt_mode is not None or self._search_list.has_class("visible"):
-            if action in ("add_stock", "delete_stock", "manual_refresh", "quit"):
+            if action in ("add_stock", "delete_stock", "set_alert", "manual_refresh", "quit"):
                 return False
         return True
 
@@ -408,6 +415,8 @@ class StockWatcherApp(App):
         if quote.is_valid:
             self._latest_quotes[code] = quote
             self._table.update_quote(quote)
+            # Check alerts
+            self._check_alerts(quote)
         else:
             cells = ["[#555555]→[/]", code, "—", "     —", "       —", "       —", "     —", "     —"]
             try:
@@ -537,9 +546,99 @@ class StockWatcherApp(App):
         self._table.remove_row_by_key(key)
         self._queue.remove(key)
         self._latest_quotes.pop(key, None)
+        # Also remove alerts for this stock
+        self._alerts = [a for a in self._alerts if a.code != key]
         save_watchlist(self.config_path, self._queue.all_codes)
+        save_alerts(self.config_path, self._alerts)
         self.notify(f"已删除: {key}")
         self._update_status()
+
+    # ------------------------------------------------------------------
+    # Alerts
+    # ------------------------------------------------------------------
+
+    def action_set_alert(self) -> None:
+        """Set a price or change-% alert for the highlighted stock."""
+        key = self._table.get_highlighted_key()
+        if key is None:
+            self.notify("没有选中的股票", severity="warning")
+            return
+
+        self._prompt_mode = "alert"
+        self._alert_target = key
+        self._prompt_container.add_class("visible")
+        self._prompt_input.value = ""
+        self._prompt_label.update(
+            f"为 [bold]{key}[/bold] 设置告警。格式: [bold]类型 数值[/bold]"
+            f"  类型: [bold]pa[/bold]=价格上破 [bold]pb[/bold]=价格下破 [bold]ca[/bold]=涨幅超 [bold]cb[/bold]=跌幅超"
+            f"  例: [bold]pa 450[/bold] 表示价格突破450时告警"
+        )
+        self._prompt_input.focus()
+
+    def _check_alerts(self, quote: StockQuote) -> None:
+        """Check all alert rules against a new quote and fire if triggered."""
+        for alert in self._alerts:
+            if alert.code != quote.code:
+                continue
+
+            if alert.triggered:
+                # Check if condition has cleared (for re-arm)
+                if not alert.check(quote):
+                    alert.triggered = False
+                continue
+
+            if alert.check(quote):
+                alert.triggered = True
+                self._fire_alert(alert, quote)
+
+    def _fire_alert(self, alert: AlertRule, quote: StockQuote) -> None:
+        """Fire an alert: TUI notification + system notification."""
+        msg = f"🚨 {quote.name or alert.code} {alert.describe()}！现价 {quote.price:.2f}"
+        self.notify(msg, severity="warning", timeout=10)
+
+        # System notification (non-blocking)
+        try:
+            subprocess.run(
+                ["notify-send", "📈 Stock Watcher 告警", msg],
+                timeout=2,
+                capture_output=True,
+            )
+        except Exception:
+            pass  # notify-send not available — that's fine
+
+    async def _on_alert_submit(self, raw: str) -> None:
+        """Parse alert specification from user input."""
+        parts = raw.strip().lower().split()
+        if len(parts) < 2:
+            self.notify("格式错误。例: pa 450 或 ca 5", severity="error")
+            return
+
+        type_map = {
+            "pa": AlertType.PRICE_ABOVE,
+            "pb": AlertType.PRICE_BELOW,
+            "ca": AlertType.PCT_ABOVE,
+            "cb": AlertType.PCT_BELOW,
+        }
+
+        alert_type = type_map.get(parts[0])
+        if alert_type is None:
+            self.notify(f"未知告警类型: {parts[0]}。可用: pa/pb/ca/cb", severity="error")
+            return
+
+        try:
+            value = float(parts[1])
+        except ValueError:
+            self.notify(f"数值无效: {parts[1]}", severity="error")
+            return
+
+        code = self._alert_target
+        # Remove any existing alert of same type for same stock
+        self._alerts = [a for a in self._alerts if not (a.code == code and a.alert_type == alert_type)]
+        self._alerts.append(AlertRule(code=code, alert_type=alert_type, value=value))
+        save_alerts(self.config_path, self._alerts)
+
+        desc = self._alerts[-1].describe()
+        self.notify(f"已为 {code} 设置告警: {desc}")
 
     # ------------------------------------------------------------------
     # Prompt handling
@@ -547,13 +646,21 @@ class StockWatcherApp(App):
 
     def action_cancel_prompt(self) -> None:
         self._prompt_mode = None
+        self._alert_target = None
         self._prompt_container.remove_class("visible")
         self._hide_search_list()
+        # Restore default prompt label
+        self._prompt_label.update(
+            "输入股票代码或名称（如 sh000001 / 腾讯），回车确认："
+        )
         self.set_focus(None)
 
     def on_input_submitted(self, event: Input.Submitted) -> None:
         if self._prompt_mode == "add":
             asyncio.create_task(self._on_add_submit(event.value))
+        elif self._prompt_mode == "alert":
+            asyncio.create_task(self._on_alert_submit(event.value))
+            self.action_cancel_prompt()
 
 
 # ---------------------------------------------------------------------------

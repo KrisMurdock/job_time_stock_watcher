@@ -11,6 +11,7 @@ from stock_watcher.config import (
     RequestConfig,
     load_config,
     save_watchlist,
+    save_alerts,
     WATCHLIST_KEY,
 )
 
@@ -186,5 +187,81 @@ watchlist:
             cfg = load_config(Path(path))
             assert cfg.poll_interval == 4.0
             assert cfg.backoff.base == 10
+        finally:
+            Path(path).unlink()
+
+
+# ---------------------------------------------------------------------------
+# load_config with alerts
+# ---------------------------------------------------------------------------
+
+
+class TestLoadConfigAlerts:
+    def test_load_alerts_from_yaml(self):
+        yaml_content = """
+poll_interval: 3.0
+watchlist:
+  - hk00700
+alerts:
+  - code: hk00700
+    type: price_above
+    value: 450.0
+  - code: hk00700
+    type: pct_above
+    value: 5.0
+"""
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False) as f:
+            f.write(yaml_content)
+            path = f.name
+
+        try:
+            cfg = load_config(Path(path))
+            assert len(cfg.alerts) == 2
+            assert cfg.alerts[0].code == "hk00700"
+            assert cfg.alerts[0].alert_type.value == "price_above"
+            assert cfg.alerts[0].value == 450.0
+        finally:
+            Path(path).unlink()
+
+
+class TestSaveAlerts:
+    def test_save_and_reload(self):
+        from stock_watcher.models import AlertRule, AlertType
+
+        yaml_content = """
+watchlist:
+  - hk00700
+"""
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False) as f:
+            f.write(yaml_content)
+            path = f.name
+
+        try:
+            alerts = [AlertRule(code="hk00700", alert_type=AlertType.PRICE_ABOVE, value=450.0)]
+            save_alerts(Path(path), alerts)
+            cfg = load_config(Path(path))
+            assert len(cfg.alerts) == 1
+            assert cfg.alerts[0].value == 450.0
+        finally:
+            Path(path).unlink()
+
+    def test_save_preserves_watchlist(self):
+        from stock_watcher.models import AlertRule, AlertType
+
+        yaml_content = """
+poll_interval: 3.0
+watchlist:
+  - hk00700
+"""
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False) as f:
+            f.write(yaml_content)
+            path = f.name
+
+        try:
+            alerts = [AlertRule(code="hk00700", alert_type=AlertType.PCT_ABOVE, value=5.0)]
+            save_alerts(Path(path), alerts)
+            cfg = load_config(Path(path))
+            assert cfg.poll_interval == 3.0
+            assert cfg.watchlist == ["hk00700"]
         finally:
             Path(path).unlink()

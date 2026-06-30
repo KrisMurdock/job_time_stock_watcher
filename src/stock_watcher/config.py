@@ -3,15 +3,19 @@
 from __future__ import annotations
 
 import random
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
 import yaml
 
+from stock_watcher.models import AlertRule
+
 
 # The YAML key for the watchlist
 WATCHLIST_KEY = "watchlist"
+ALERTS_KEY = "alerts"
 
 
 # ---------------------------------------------------------------------------
@@ -67,6 +71,7 @@ class AppConfig:
     backoff: BackoffConfig = field(default_factory=BackoffConfig)
     request: RequestConfig = field(default_factory=RequestConfig)
     watchlist: list[str] = field(default_factory=list)
+    alerts: list[AlertRule] = field(default_factory=list)
     proxies: list[str] = field(default_factory=list)
 
     @classmethod
@@ -76,6 +81,7 @@ class AppConfig:
             backoff=BackoffConfig.from_dict(d.get("backoff", {})),
             request=RequestConfig.from_dict(d.get("request", {})),
             watchlist=[str(x) for x in d.get("watchlist", [])],
+            alerts=[AlertRule.from_config_dict(a) for a in d.get("alerts", [])],
             proxies=[str(x) for x in d.get("proxies", [])],
         )
 
@@ -99,15 +105,56 @@ def load_config(path: Path) -> AppConfig:
     return AppConfig.from_dict(raw)
 
 
-def save_watchlist(path: Path, watchlist: list[str]) -> None:
-    """Persist only the watchlist section of the config, preserving everything else."""
-    if path.exists():
-        with open(path, "r", encoding="utf-8") as fh:
-            raw = yaml.safe_load(fh) or {}
+def _save_yaml_list(path: Path, key: str, item_texts: list[str]) -> None:
+    """Replace a top-level YAML list key in-place, preserving all comments.
+
+    Reads the file as text, finds the ``key:`` block (from the key line
+    through its indented list items), and replaces just that block.
+    If *item_texts* is empty, writes ``key: []`` on one line.
+    Each entry in *item_texts* is one complete list item — use newlines
+    within an entry to produce multi-line dict items.
+    """
+    if item_texts:
+        items_block = "\n".join(f"- {t}" for t in item_texts)
+        new_block = f"{key}:\n{items_block}\n"
     else:
-        raw = {}
+        new_block = f"{key}: []\n"
 
-    raw[WATCHLIST_KEY] = list(watchlist)
+    if path.exists():
+        text = path.read_text(encoding="utf-8")
+    else:
+        text = ""
 
-    with open(path, "w", encoding="utf-8") as fh:
-        yaml.safe_dump(raw, fh, default_flow_style=False, allow_unicode=True)
+    # Match a top-level YAML key (no leading whitespace) followed by its
+    # content — list items (starting with "-") and their continuation
+    # lines (indented).  Stops before the next top-level key, comment, or
+    # an empty line.
+    pattern = re.compile(
+        rf"^{re.escape(key)}:.*(?:\n(?:[ \t]+\S.*|-.*))*",
+        re.MULTILINE,
+    )
+
+    if pattern.search(text):
+        text = pattern.sub(new_block, text)
+    else:
+        # Key does not exist yet: append at end, with a blank separating
+        # line when the file doesn't already end with one.
+        if text and not text.endswith("\n"):
+            text += "\n"
+        text += "\n" + new_block
+
+    path.write_text(text, encoding="utf-8")
+
+
+def save_watchlist(path: Path, watchlist: list[str]) -> None:
+    """Persist the watchlist, keeping all comments and other settings intact."""
+    _save_yaml_list(path, WATCHLIST_KEY, list(watchlist))
+
+
+def save_alerts(path: Path, alerts: list[AlertRule]) -> None:
+    """Persist the alerts, keeping all comments and other settings intact."""
+    items: list[str] = []
+    for rule in alerts:
+        d = rule.to_config_dict()
+        items.append(f"code: {d['code']}\n  type: {d['type']}\n  value: {d['value']}")
+    _save_yaml_list(path, ALERTS_KEY, items)
