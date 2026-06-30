@@ -137,6 +137,49 @@ class TestParseTencentResponse:
 
 
 # ---------------------------------------------------------------------------
+# parse_sina_us_response
+# ---------------------------------------------------------------------------
+class TestParseSinaUsResponse:
+    """Tests for parse_sina_us_response — Sina gb_ API for US stocks."""
+
+    # fmt: off
+    _SAMPLE = (
+        'var hq_str_gb_aapl='
+        '"苹果,281.7400,-0.72,2026-06-30 17:00:16,-2.0400,286.7300,'
+        '288.3697,279.8500,317.4000,200.4500,66427002,79974263,,'
+        '8.30,33.940000,0.00,0.00,0.27,0.00,14687354038,63,'
+        '280.8180,-0.33,-0.92,Jun 30 05:00AM EDT,Jun 29 04:00PM EDT,'
+        '283.7800,52351,1,2026"'
+    )
+    # fmt: on
+
+    def test_parse_valid_us_stock(self):
+        from stock_watcher.fetcher import parse_sina_us_response
+
+        quote = parse_sina_us_response("usaapl", self._SAMPLE)
+        assert quote.code == "usaapl"
+        assert quote.name == "苹果"
+        assert quote.price == pytest.approx(281.74, abs=0.01)
+        assert quote.change_pct == pytest.approx(-0.72, abs=0.01)
+        assert quote.change_amount == pytest.approx(-2.04, abs=0.01)
+        assert quote.high == pytest.approx(286.73, abs=0.01)
+        assert quote.low == pytest.approx(279.85, abs=0.01)
+
+    def test_parse_empty_response(self):
+        from stock_watcher.fetcher import parse_sina_us_response
+
+        quote = parse_sina_us_response("usaapl", "")
+        assert quote.code == "usaapl"
+        assert not quote.is_valid
+
+    def test_parse_insufficient_fields(self):
+        from stock_watcher.fetcher import parse_sina_us_response
+
+        quote = parse_sina_us_response("usaapl", 'var hq_str_gb_aapl="a,b,c"')
+        assert not quote.is_valid
+
+
+# ---------------------------------------------------------------------------
 # get_fetcher
 # ---------------------------------------------------------------------------
 class TestGetFetcher:
@@ -152,9 +195,13 @@ class TestGetFetcher:
         f = get_fetcher("hk00700")
         assert isinstance(f, TencentFetcher)
 
+    def test_returns_sina_for_us(self):
+        f = get_fetcher("usaapl")
+        assert isinstance(f, SinaFetcher)
+
     def test_raises_for_unknown_prefix(self):
         with pytest.raises(ValueError):
-            get_fetcher("usAAPL")
+            get_fetcher("xx12345")
 
 
 # ---------------------------------------------------------------------------
@@ -197,7 +244,8 @@ class TestParseSuggestResponse:
 
     def test_parse_valid_response(self):
         from stock_watcher.fetcher import _parse_suggest_response
-        text = 'var suggestvalue="000001,平安银行,12;00700,腾讯控股,13;600000,浦发银行,11";'
+        # Real API format: name,market_type,raw_code,prefixed_code,name_repeat,...
+        text = 'var suggestvalue="平安银行,12,000001,sz000001,平安银行;腾讯控股,31,00700,00700,腾讯控股;浦发银行,11,600000,sh600000,浦发银行";'
         results = _parse_suggest_response(text)
         assert len(results) == 3
         assert results[0].code == "sz000001"
@@ -221,7 +269,7 @@ class TestParseSuggestResponse:
 
     def test_parse_unknown_market_skipped(self):
         from stock_watcher.fetcher import _parse_suggest_response
-        text = 'var suggestvalue="AAPL,苹果,99;000001,平安,12";'
+        text = 'var suggestvalue="苹果,99,AAPL,AAPL,苹果;平安,12,000001,sz000001,平安";'
         results = _parse_suggest_response(text)
         # Only the second entry (market 12 → sz) should be included
         assert len(results) == 1
@@ -237,10 +285,10 @@ class TestSearchStocks:
 
     @pytest.mark.asyncio
     async def test_search_returns_results(self, respx_mock):
-        respx_mock.get("https://suggest3.sinajs.cn/suggest/type=11,12,13,14,15&key=腾讯").mock(
+        respx_mock.get("https://suggest3.sinajs.cn/suggest/type=11,12,31,14,15&key=腾讯").mock(
             return_value=httpx.Response(
                 200,
-                text='var suggestvalue="00700,腾讯控股,13;000001,平安银行,12";',
+                text='var suggestvalue="腾讯控股,31,00700,00700,腾讯控股;平安银行,12,000001,sz000001,平安银行";',
             )
         )
         results = await search_stocks("腾讯")
@@ -250,7 +298,7 @@ class TestSearchStocks:
 
     @pytest.mark.asyncio
     async def test_search_no_results(self, respx_mock):
-        respx_mock.get("https://suggest3.sinajs.cn/suggest/type=11,12,13,14,15&key=zzzz").mock(
+        respx_mock.get("https://suggest3.sinajs.cn/suggest/type=11,12,31,14,15&key=zzzz").mock(
             return_value=httpx.Response(200, text='var suggestvalue="";')
         )
         results = await search_stocks("zzzz")
@@ -258,7 +306,7 @@ class TestSearchStocks:
 
     @pytest.mark.asyncio
     async def test_search_http_error(self, respx_mock):
-        respx_mock.get("https://suggest3.sinajs.cn/suggest/type=11,12,13,14,15&key=test").mock(
+        respx_mock.get("https://suggest3.sinajs.cn/suggest/type=11,12,31,14,15&key=test").mock(
             return_value=httpx.Response(500)
         )
         results = await search_stocks("test")
@@ -266,7 +314,7 @@ class TestSearchStocks:
 
     @pytest.mark.asyncio
     async def test_search_timeout(self, respx_mock):
-        respx_mock.get("https://suggest3.sinajs.cn/suggest/type=11,12,13,14,15&key=test").mock(
+        respx_mock.get("https://suggest3.sinajs.cn/suggest/type=11,12,31,14,15&key=test").mock(
             side_effect=httpx.TimeoutException("timeout")
         )
         results = await search_stocks("test")

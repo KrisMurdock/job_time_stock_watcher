@@ -20,9 +20,9 @@ class TestMarket:
         assert Market.from_code("hk00700") == Market.HONGKONG
 
     def test_unknown_prefix_raises(self):
-        """Unknown prefix (e.g. 'usAAPL') raises ValueError."""
+        """Unknown prefix (e.g. 'xx12345') raises ValueError."""
         with pytest.raises(ValueError, match="Unknown market prefix"):
-            Market.from_code("usAAPL")
+            Market.from_code("xx12345")
 
     def test_empty_code_raises(self):
         """Empty string raises ValueError."""
@@ -39,7 +39,7 @@ class TestMarket:
         assert Market.is_valid_code("sh000001") is True
         assert Market.is_valid_code("sz399001") is True
         assert Market.is_valid_code("hk00700") is True
-        assert Market.is_valid_code("usAAPL") is False
+        assert Market.is_valid_code("usaapl") is True
         assert Market.is_valid_code("") is False
 
 

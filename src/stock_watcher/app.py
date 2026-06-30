@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import asyncio
 import datetime as dt
+import json
 import os
 import subprocess
+import sys
 import time
 from pathlib import Path
 from typing import Optional
@@ -25,13 +27,13 @@ from textual.widgets import (
 )
 from textual.binding import Binding
 
-from stock_watcher.config import load_config, save_watchlist, save_alerts, RequestConfig
+from stock_watcher.config import load_config, save_watchlist, save_alerts, save_positions, RequestConfig
 from stock_watcher.fetcher import get_fetcher, FetchError, search_stocks, SearchResult
-from stock_watcher.models import StockQuote, Market, AlertRule, AlertType
+from stock_watcher.models import StockQuote, Market, AlertRule, AlertType, Position
 from stock_watcher.scheduler import (
     PollQueue,
-    BackoffController,
     TradingCalendar,
+    MarketBackoffManager,
 )
 
 
@@ -109,28 +111,90 @@ class StatusBar(Static):
 class StockTable(DataTable):
     """DataTable specialised for stock quote display."""
 
+    # Column keys (must match add_columns labels + on_mount)
+    COL_DIR = " "
+    COL_CODE = "代码"
+    COL_NAME = "名称"
+    COL_PRICE = "现价"
+    COL_PCT = "涨跌幅"
+    COL_AMOUNT = "涨跌额"
+    COL_HIGH = "最高"
+    COL_LOW = "最低"
+    COL_QTY = "持仓量"
+    COL_COST = "成本价"
+    COL_MVAL = "市值"
+    COL_PNL = "盈亏"
+    COL_PNLP = "盈亏比"
+    COL_OPEN = "今开"
+    COL_VOL = "成交量"
+    COL_TURN = "成交额"
+    COL_PE = "市盈率"
+    COL_MCAP = "总市值"
+
+    _COLUMN_LABELS: dict[str, str] = {
+        " ": " ",
+        "代码": "代码",
+        "名称": "名称",
+        "现价": "现价",
+        "涨跌幅": "涨跌幅",
+        "涨跌额": "涨跌额",
+        "最高": "最高",
+        "最低": "最低",
+        "持仓量": "持仓量",
+        "成本价": "成本价",
+        "市值": "市值",
+        "盈亏": "盈亏",
+        "盈亏比": "盈亏比",
+        "今开": "今开",
+        "成交量": "成交量",
+        "成交额": "成交额",
+        "市盈率": "市盈率",
+        "总市值": "总市值",
+    }
+
     def __init__(self) -> None:
         super().__init__(cursor_type="row", zebra_stripes=False)
+        # Raw values for sort: row_key → {col_key: float|str}
+        self._raw: dict[str, dict[str, str | float | None]] = {}
+        self._sort_col: str | None = None
+        self._sort_reverse: bool = False
+        # Codes that have active alerts
+        self._alert_codes: set[str] = set()
+        # Positions: code → Position
+        self._positions: dict[str, "Position"] = {}
+
+    def set_positions(self, positions: dict[str, "Position"]) -> None:
+        self._positions = positions
 
     def on_mount(self) -> None:
         self.add_columns(
-            " ",          # direction arrow
-            "代码",
-            "名称",
-            "现价",
-            "涨跌幅",
-            "涨跌额",
-            "最高",
-            "最低",
+            self.COL_DIR,
+            self.COL_CODE,
+            self.COL_NAME,
+            self.COL_PRICE,
+            self.COL_PCT,
+            self.COL_AMOUNT,
+            self.COL_HIGH,
+            self.COL_LOW,
+            self.COL_QTY,
+            self.COL_COST,
+            self.COL_MVAL,
+            self.COL_PNL,
+            self.COL_PNLP,
+            self.COL_OPEN,
+            self.COL_VOL,
+            self.COL_TURN,
+            self.COL_PE,
+            self.COL_MCAP,
         )
-        # No default sort — rows appear in config order
 
     def update_quote(self, quote: StockQuote) -> None:
         """Insert or update a row for the given quote."""
         row_key = quote.code
+        pos = self._positions.get(row_key)
 
         cells = [
-            self._fmt_dir(quote.direction),
+            self._fmt_dir(quote.direction, quote.code),
             f"[bold]{quote.code}[/bold]",
             quote.name or "—",
             self._fmt_price(quote.price),
@@ -138,7 +202,40 @@ class StockTable(DataTable):
             self._fmt_amount(quote.change_amount),
             self._fmt_price(quote.high),
             self._fmt_price(quote.low),
+            self._fmt_qty(pos),
+            self._fmt_price(pos.cost if pos and pos.is_valid else None),
+            self._fmt_mval(pos, quote.price),
+            self._fmt_pnl(pos, quote.price),
+            self._fmt_pnlp(pos, quote.price),
+            self._fmt_price(quote.open),
+            self._fmt_volume(quote.volume),
+            self._fmt_turnover(quote.turnover),
+            self._fmt_pe(quote.pe),
+            self._fmt_mcap(quote.market_cap),
         ]
+
+        # Store raw values for sorting
+        price = quote.price or 0.0
+        self._raw[row_key] = {
+            self.COL_DIR: quote.change_pct or 0.0,
+            self.COL_CODE: quote.code,
+            self.COL_NAME: quote.name or "",
+            self.COL_PRICE: price,
+            self.COL_PCT: quote.change_pct or 0.0,
+            self.COL_AMOUNT: quote.change_amount or 0.0,
+            self.COL_HIGH: quote.high or 0.0,
+            self.COL_LOW: quote.low or 0.0,
+            self.COL_QTY: pos.quantity if pos else 0,
+            self.COL_COST: pos.cost if pos and pos.is_valid else 0.0,
+            self.COL_MVAL: pos.market_value(price) if pos and pos.is_valid else 0.0,
+            self.COL_PNL: pos.pnl(price) if pos and pos.is_valid else 0.0,
+            self.COL_PNLP: pos.pnl_pct(price) if pos and pos.is_valid else 0.0,
+            self.COL_OPEN: quote.open or 0.0,
+            self.COL_VOL: quote.volume or 0.0,
+            self.COL_TURN: quote.turnover or 0.0,
+            self.COL_PE: quote.pe or 0.0,
+            self.COL_MCAP: quote.market_cap or 0.0,
+        }
 
         try:
             self.remove_row(row_key)
@@ -146,15 +243,67 @@ class StockTable(DataTable):
             pass
 
         self.add_row(*cells, key=row_key)
+        self._reapply_sort()
 
-    def get_row_count(self) -> int:
-        return self.row_count
+    def _reapply_sort(self) -> None:
+        """Re-apply current sort order after row updates, if any."""
+        if self._sort_col is not None:
+            self.sort(
+                self._sort_col,
+                key=lambda row_key: self._raw.get(str(row_key), {}).get(
+                    self._sort_col, 0
+                ),
+                reverse=self._sort_reverse,
+            )
+
+    def _toggle_sort(self, col_key: str) -> None:
+        """Toggle sort on a column: asc → desc → unsort."""
+        label_key = str(col_key)
+        # Restore all column labels
+        for col, label in self._COLUMN_LABELS.items():
+            self._update_column_label(col, label)
+
+        if self._sort_col == label_key:
+            if self._sort_reverse:
+                # Third click: unsort
+                self._sort_col = None
+                self._sort_reverse = False
+                return
+            else:
+                # Second click: reverse
+                self._sort_reverse = True
+        else:
+            # First click: ascending
+            self._sort_col = label_key
+            self._sort_reverse = False
+
+        # Apply sort
+        self.sort(
+            self._sort_col,
+            key=lambda row_key: self._raw.get(str(row_key), {}).get(
+                self._sort_col, 0
+            ),
+            reverse=self._sort_reverse,
+        )
+
+        # Update sort indicator
+        arrow = " ▼" if self._sort_reverse else " ▲"
+        self._COLUMN_LABELS[label_key] = self._COLUMN_LABELS[label_key].rstrip(" ▲▼") + arrow
+        self._update_column_label(label_key, self._COLUMN_LABELS[label_key])
+
+    def _update_column_label(self, col_key: str, label: str) -> None:
+        """Update a column header label in-place."""
+        for column in self.columns.values():
+            if str(column.label) == col_key:
+                column.label = label
+                return
 
     def remove_row_by_key(self, key: str) -> None:
         try:
             self.remove_row(key)
         except Exception:
             pass
+        self._raw.pop(key, None)
 
     def get_highlighted_key(self) -> Optional[str]:
         if self.row_count == 0:
@@ -167,13 +316,13 @@ class StockTable(DataTable):
 
     # -- formatters -------------------------------------------------------
 
-    @staticmethod
-    def _fmt_dir(direction: str) -> str:
+    def _fmt_dir(self, direction: str, code: str = "") -> str:
+        alert = "🔔" if code in self._alert_codes else " "
         if direction == "up":
-            return f"[bold {UP_COLOR}]↑[/]"
+            return f"{alert}[bold {UP_COLOR}]↑[/]"
         elif direction == "down":
-            return f"[bold {DOWN_COLOR}]↓[/]"
-        return f"[{FLAT_COLOR}]→[/]"
+            return f"{alert}[bold {DOWN_COLOR}]↓[/]"
+        return f"{alert}[{FLAT_COLOR}]→[/]"
 
     @staticmethod
     def _fmt_price(val: Optional[float]) -> str:
@@ -200,6 +349,224 @@ class StockTable(DataTable):
         sign = "+" if val > 0 else ""
         color = UP_COLOR if val > 0 else DOWN_COLOR
         return f"[{color}]{sign}{val:>7.2f}[/]"
+
+    # -- position formatters ------------------------------------------------
+
+    @staticmethod
+    def _fmt_qty(pos: Optional[Position]) -> str:
+        if pos is None or not pos.is_valid:
+            return "     —"
+        return f"{pos.quantity:>6d}"
+
+    @staticmethod
+    def _fmt_mval(pos: Optional[Position], price: Optional[float]) -> str:
+        if pos is None or not pos.is_valid or price is None:
+            return "        —"
+        return f"{pos.market_value(price):>9.2f}"
+
+    @staticmethod
+    def _fmt_pnl(pos: Optional[Position], price: Optional[float]) -> str:
+        if pos is None or not pos.is_valid or price is None:
+            return "       —"
+        v = pos.pnl(price)
+        sign = "+" if v > 0 else ""
+        color = UP_COLOR if v > 0 else DOWN_COLOR if v < 0 else FLAT_COLOR
+        return f"[{color}]{sign}{v:>7.2f}[/]"
+
+    @staticmethod
+    def _fmt_pnlp(pos: Optional[Position], price: Optional[float]) -> str:
+        if pos is None or not pos.is_valid or price is None:
+            return "       —"
+        v = pos.pnl_pct(price)
+        sign = "+" if v > 0 else ""
+        color = UP_COLOR if v > 0 else DOWN_COLOR if v < 0 else FLAT_COLOR
+        return f"[{color}]{sign}{v:>6.2f}%[/]"
+
+    @staticmethod
+    def _fmt_volume(val: Optional[float]) -> str:
+        if val is None:
+            return "        —"
+        # Format as 万/亿 for readability
+        if val >= 1e8:
+            return f"{val / 1e8:>7.2f}亿"
+        if val >= 1e4:
+            return f"{val / 1e4:>7.2f}万"
+        return f"{val:>8.0f}"
+
+    @staticmethod
+    def _fmt_turnover(val: Optional[float]) -> str:
+        if val is None:
+            return "        —"
+        return f"{val / 1e8:>7.2f}亿"
+
+    @staticmethod
+    def _fmt_pe(val: Optional[float]) -> str:
+        if val is None:
+            return "     —"
+        return f"{val:>6.2f}"
+
+    @staticmethod
+    def _fmt_mcap(val: Optional[float]) -> str:
+        if val is None:
+            return "       —"
+        return f"{val:>7.0f}亿"
+
+
+# ---------------------------------------------------------------------------
+# Detail screen
+# ---------------------------------------------------------------------------
+
+from textual.screen import ModalScreen
+from textual.widgets import RichLog
+
+
+class DetailModal(ModalScreen[None]):
+    """Modal popup showing extended info for a single stock."""
+
+    def __init__(self, quote: StockQuote, positions: dict, alert_history: list[str],
+                 alert_rules: list):
+        super().__init__()
+        self._quote = quote
+        self._positions = positions
+        self._alert_history = alert_history
+        self._alert_rules = alert_rules
+
+    def compose(self) -> ComposeResult:
+        yield RichLog(id="detail_content", highlight=True, markup=True)
+
+    def on_mount(self) -> None:
+        self._render()
+
+    def _render(self) -> None:
+        q = self._quote
+        log = self.query_one("#detail_content", RichLog)
+        log.clear()
+
+        pos = self._positions.get(q.code)
+        price = q.price or 0.0
+        pct_str = f"[bold red]+{q.change_pct:.2f}%[/]" if (q.change_pct or 0) > 0 else (
+            f"[bold green]{q.change_pct:.2f}%[/]" if q.change_pct else "—"
+        )
+
+        log.write(f"\n  [bold yellow]{q.name or q.code}[/]  {q.code}")
+        log.write(f"  {'─' * 50}")
+        log.write(f"  当前价  [bold]{price:.2f}[/]  {pct_str}")
+        log.write(f"  今开 {q.open or '—':>8}  最高 {q.high or '—':>8}  最低 {q.low or '—':>8}")
+        log.write(f"  成交量  {self._fmt_vol(q.volume)}  成交额  {self._fmt_turn(q.turnover)}")
+
+        # A-share order book
+        if q.code.startswith(("sh", "sz")):
+            log.write(f"\n  [bold]五档盘口[/]")
+            log.write(f"  {'卖5':>4}  {self._fmt_ob(q.ask_prices, 4)}  {self._fmt_ob_vol(q.ask_volumes, 4)}")
+            log.write(f"  {'卖4':>4}  {self._fmt_ob(q.ask_prices, 3)}  {self._fmt_ob_vol(q.ask_volumes, 3)}")
+            log.write(f"  {'卖3':>4}  {self._fmt_ob(q.ask_prices, 2)}  {self._fmt_ob_vol(q.ask_volumes, 2)}")
+            log.write(f"  {'卖2':>4}  {self._fmt_ob(q.ask_prices, 1)}  {self._fmt_ob_vol(q.ask_volumes, 1)}")
+            log.write(f"  {'卖1':>4}  {self._fmt_ob(q.ask_prices, 0)}  {self._fmt_ob_vol(q.ask_volumes, 0)}")
+            log.write(f"  {'─' * 30}")
+            log.write(f"  {'买1':>4}  {self._fmt_ob(q.bid_prices, 0)}  {self._fmt_ob_vol(q.bid_volumes, 0)}")
+            log.write(f"  {'买2':>4}  {self._fmt_ob(q.bid_prices, 1)}  {self._fmt_ob_vol(q.bid_volumes, 1)}")
+            log.write(f"  {'买3':>4}  {self._fmt_ob(q.bid_prices, 2)}  {self._fmt_ob_vol(q.bid_volumes, 2)}")
+            log.write(f"  {'买4':>4}  {self._fmt_ob(q.bid_prices, 3)}  {self._fmt_ob_vol(q.bid_volumes, 3)}")
+            log.write(f"  {'买5':>4}  {self._fmt_ob(q.bid_prices, 4)}  {self._fmt_ob_vol(q.bid_volumes, 4)}")
+
+        # HK: PE + market cap
+        if q.code.startswith("hk"):
+            log.write(f"\n  [bold]港股数据[/]")
+            log.write(f"  市盈率  {q.pe or '—':>8}  总市值  {self._fmt_mcap_val(q.market_cap)}")
+
+        # Position
+        if pos and pos.is_valid:
+            log.write(f"\n  [bold]持仓[/]")
+            log.write(f"  成本  {pos.cost:.2f}  数量  {pos.quantity}  市值  {pos.market_value(price):.2f}")
+            pnl = pos.pnl(price)
+            pnlp = pos.pnl_pct(price)
+            sign = "+" if pnl > 0 else ""
+            log.write(f"  盈亏  {sign}{pnl:.2f}  ({sign}{pnlp:.2f}%)")
+
+        # Alerts for this stock
+        stock_alerts = [a for a in self._alert_rules if a.code == q.code]
+        if stock_alerts:
+            log.write(f"\n  [bold]告警规则[/]")
+            for a in stock_alerts:
+                status = "已触发" if a.triggered else "待触发"
+                log.write(f"  {a.alert_type.value:14s}  {a.value:>8.2f}  [{status}]")
+
+        # Recent history
+        if self._alert_history:
+            log.write(f"\n  [bold]最近告警[/]")
+            for line in self._alert_history[:5]:
+                try:
+                    e = json.loads(line)
+                except Exception:
+                    continue
+                if e.get("code") != q.code:
+                    continue
+                log.write(f"  {e.get('ts', '')[-8:] or '??:??'}  {e.get('type', '')} → {e.get('price', '—')}")
+
+        log.write(f"\n  [dim]按 Enter/Esc 关闭[/dim]")
+
+    @staticmethod
+    def _fmt_vol(val: Optional[float]) -> str:
+        if val is None: return "—"
+        if val >= 1e8: return f"{val / 1e8:.2f}亿"
+        if val >= 1e4: return f"{val / 1e4:.2f}万"
+        return f"{val:.0f}"
+
+    @staticmethod
+    def _fmt_turn(val: Optional[float]) -> str:
+        if val is None: return "—"
+        return f"{val / 1e8:.2f}亿"
+
+    @staticmethod
+    def _fmt_mcap_val(val: Optional[float]) -> str:
+        if val is None: return "—"
+        return f"{val:.0f}亿"
+
+    @staticmethod
+    def _fmt_ob(prices: list, idx: int) -> str:
+        if idx < len(prices): return f"{prices[idx]:>8.2f}"
+        return "       —"
+
+    @staticmethod
+    def _fmt_ob_vol(vols: list, idx: int) -> str:
+        if idx < len(vols):
+            v = vols[idx]
+            return f"{v:>6.0f}"
+        return "     —"
+
+    def on_key(self, event) -> None:
+        if event.key in ("enter", "escape"):
+            self.dismiss()
+
+
+class SettingsModal(ModalScreen[None]):
+    """Settings dialog with editable fields."""
+
+    def __init__(self, cfg: "AppConfig", config_path: Path):
+        super().__init__()
+        self._cfg = cfg
+        self._config_path = config_path
+        self._inputs: dict[str, Input] = {}
+
+    def compose(self) -> ComposeResult:
+        yield RichLog(id="settings_log", highlight=True, markup=True)
+
+    def on_mount(self) -> None:
+        log = self.query_one("#settings_log", RichLog)
+        log.clear()
+        log.write("\n  [bold yellow]设置[/]  (编辑 config.yaml 后自动生效)")
+        log.write(f"  {'─' * 40}")
+        log.write(f"  轮询间隔(秒)       {self._cfg.poll_interval}")
+        log.write(f"  请求超时(秒)       {self._cfg.request.timeout}")
+        log.write(f"  退避基数(秒)       {self._cfg.backoff.base}")
+        log.write(f"  退避上限(秒)       {self._cfg.backoff.max_delay}")
+        log.write(f"  退避乘数           {self._cfg.backoff.multiplier}")
+        log.write(f"  告警音效命令       {self._cfg.alert_sound_command or '(空)'}")
+        log.write(f"\n  [dim]按 Esc 关闭，编辑 config.yaml 后自动热加载[/dim]")
+
+    def on_key(self, event) -> None:
+        if event.key in ("enter", "escape"):
+            self.dismiss()
 
 
 # ---------------------------------------------------------------------------
@@ -304,12 +671,20 @@ class StockWatcherApp(App):
         Binding("a", "add_stock", "添加"),
         Binding("d", "delete_stock", "删除"),
         Binding("t", "set_alert", "告警"),
+        Binding("p", "set_position", "持仓"),
+        Binding("v", "view_alerts", "告警列表"),
+        Binding("h", "alert_history", "告警历史"),
+        Binding("s", "settings", "设置"),
+        Binding("e", "export_csv", "导出CSV"),
         Binding("r", "manual_refresh", "刷新"),
+        Binding("ctrl+n", "reload_config", "热加载"),
         Binding("q", "quit", "退出"),
         Binding("escape", "cancel_prompt", "取消", show=False),
+        Binding("enter", "show_detail", "详情", show=False),
     ]
 
     config_path: Path = Path("config.yaml")
+    alert_history_path: Path = Path("alert_history.jsonl")
 
     def __init__(self, config_path: Optional[Path] = None):
         super().__init__()
@@ -338,7 +713,7 @@ class StockWatcherApp(App):
 
         self._calendar = TradingCalendar()
         self._queue = PollQueue(list(self._cfg.watchlist))
-        self._backoff = BackoffController.from_config(self._cfg.backoff)
+        self._backoff = MarketBackoffManager(self._cfg.backoff)
         self._request_cfg = self._cfg.request
         self._poll_interval = self._cfg.poll_interval
 
@@ -354,21 +729,86 @@ class StockWatcherApp(App):
 
         # Alert rules loaded from config
         self._alerts: list[AlertRule] = list(self._cfg.alerts)
+        self._positions: dict[str, Position] = dict(self._cfg.positions)
+        self._update_alert_codes()
+        self._table.set_positions(self._positions)
 
         self._prompt_mode: Optional[str] = None
         self._alert_target: Optional[str] = None  # stock code for alert setup
+        self._alert_viewing: bool = False
+        self._alert_list_items: list[ListItem] = []
         self._search_results: list[SearchResult] = []
         self._stopped = False
 
         self._poll_loop()
 
     # ------------------------------------------------------------------
+    # Column sort
+    # ------------------------------------------------------------------
+
+    def on_data_table_header_selected(self, event: DataTable.HeaderSelected) -> None:
+        """Handle click on a column header → toggle sort."""
+        if event.data_table is self._table:
+            col = event.label.plain
+            self._table._toggle_sort(col)
+        event.stop()
+
+    # ------------------------------------------------------------------
+    # Detail panel
+    # ------------------------------------------------------------------
+
+    def action_show_detail(self) -> None:
+        """Show detail modal for the highlighted stock."""
+        key = self._table.get_highlighted_key()
+        if key is None:
+            return
+        quote = self._latest_quotes.get(key)
+        if quote is None:
+            self.notify("暂无该股票行情数据", severity="warning")
+            return
+
+        history_lines = self._read_alert_history(last=50)
+        self.push_screen(DetailModal(quote, self._positions, history_lines, self._alerts))
+
+    def action_settings(self) -> None:
+        """Show settings readout."""
+        self.push_screen(SettingsModal(self._cfg, self.config_path))
+
+    def action_export_csv(self) -> None:
+        """Export current table data to CSV."""
+        import csv
+        now = dt.datetime.now().strftime("%Y%m%d_%H%M%S")
+        path = Path(f"export_{now}.csv")
+        try:
+            with open(path, "w", newline="", encoding="utf-8-sig") as f:
+                writer = csv.writer(f)
+                writer.writerow(["代码", "名称", "现价", "涨跌幅", "涨跌额", "今开", "最高", "最低",
+                                 "成交量", "成交额", "市盈率", "总市值"])
+                for code in self._queue.all_codes:
+                    q = self._latest_quotes.get(code)
+                    if q is None:
+                        continue
+                    writer.writerow([
+                        q.code, q.name or "", q.price or "", q.change_pct or "",
+                        q.change_amount or "", q.open or "", q.high or "", q.low or "",
+                        q.volume or "", q.turnover or "", q.pe or "", q.market_cap or "",
+                    ])
+            self.notify(f"已导出: {path}")
+        except OSError as e:
+            self.notify(f"导出失败: {e}", severity="error")
+
+    # ------------------------------------------------------------------
     # Key binding gate
     # ------------------------------------------------------------------
 
     def check_action(self, action: str, parameters: tuple[object, ...]) -> bool | None:
+        if self._alert_viewing:
+            if action in ("delete_alert", "cancel_prompt", "view_alerts", "show_detail"):
+                return True
+            return False
         if self._prompt_mode is not None or self._search_list.has_class("visible"):
-            if action in ("add_stock", "delete_stock", "set_alert", "manual_refresh", "quit"):
+            if action in ("add_stock", "delete_stock", "set_alert", "set_position",
+                          "manual_refresh", "quit"):
                 return False
         return True
 
@@ -389,11 +829,12 @@ class StockWatcherApp(App):
                 continue
 
             if not self._calendar.is_trading(code):
-                await asyncio.sleep(2)
+                await asyncio.sleep(0.1)
                 continue
 
-            if self._backoff.is_backed_off:
-                delay = self._backoff.get_delay()
+            backoff = self._backoff.get(code)
+            if backoff.is_backed_off:
+                delay = backoff.get_delay()
                 self._update_status()
                 await asyncio.sleep(delay)
 
@@ -402,18 +843,19 @@ class StockWatcherApp(App):
 
     async def _fetch_one(self, code: str) -> None:
         t0 = time.monotonic()
+        backoff = self._backoff.get(code)
         try:
             fetcher = get_fetcher(code, self._request_cfg)
             quote = await fetcher.fetch(code)
         except FetchError as e:
             if e.is_retryable:
-                self._backoff.backoff()
-            self._status_bar.errors = self._backoff.consecutive_failures
+                backoff.backoff()
+            self._status_bar.errors = backoff.consecutive_failures
             self._update_status()
             return
 
         elapsed_ms = (time.monotonic() - t0) * 1000
-        self._backoff.reset()
+        backoff.reset()
         self._status_bar.errors = 0
         self._status_bar.latency = f"{elapsed_ms:.0f}ms"
 
@@ -435,8 +877,8 @@ class StockWatcherApp(App):
     def _update_status(self) -> None:
         sb = self._status_bar
         sb.status = self._calendar.status_string()
-        if self._backoff.is_backed_off:
-            sb.status += f" 退避{self._backoff.current_delay:.0f}s"
+        if self._backoff.any_backed_off:
+            sb.status += f" 退避{self._backoff.max_delay:.0f}s"
 
         # Stats
         quotes = self._latest_quotes.values()
@@ -487,10 +929,15 @@ class StockWatcherApp(App):
 
         # Sync alerts
         self._alerts = list(new_cfg.alerts)
+        self._update_alert_codes()
+
+        # Sync positions
+        self._positions = dict(new_cfg.positions)
+        self._table.set_positions(self._positions)
 
         # Sync poll interval and backoff
         self._poll_interval = new_cfg.poll_interval
-        self._backoff = BackoffController.from_config(new_cfg.backoff)
+        self._backoff = MarketBackoffManager(new_cfg.backoff)
 
         if added or removed:
             names = []
@@ -501,6 +948,15 @@ class StockWatcherApp(App):
             self.notify(f"配置文件已更新（{'，'.join(names)}）")
 
         self._update_status()
+
+    # ------------------------------------------------------------------
+    # Config reload
+    # ------------------------------------------------------------------
+
+    def action_reload_config(self) -> None:
+        """Force reload config.yaml, bypassing mtime check."""
+        self._config_mtime = 0.0  # force _reload_config_if_changed to re-read
+        self._reload_config_if_changed()
 
     # ------------------------------------------------------------------
     # Manual refresh
@@ -580,6 +1036,8 @@ class StockWatcherApp(App):
         self._search_list.focus()
 
     def on_list_view_selected(self, event: ListView.Selected) -> None:
+        if self._alert_viewing:
+            return  # No auto-add in alert view mode
         if not self._search_list.has_class("visible"):
             return
 
@@ -610,10 +1068,76 @@ class StockWatcherApp(App):
         self._latest_quotes.pop(key, None)
         # Also remove alerts for this stock
         self._alerts = [a for a in self._alerts if a.code != key]
+        self._positions.pop(key, None)
         save_watchlist(self.config_path, self._queue.all_codes)
         save_alerts(self.config_path, self._alerts)
+        save_positions(self.config_path, self._positions)
+        self._update_alert_codes()
         self.notify(f"已删除: {key}")
         self._update_status()
+
+    # ------------------------------------------------------------------
+    # Position
+    # ------------------------------------------------------------------
+
+    def action_set_position(self) -> None:
+        """Set cost and quantity for the highlighted stock."""
+        key = self._table.get_highlighted_key()
+        if key is None:
+            self.notify("没有选中的股票", severity="warning")
+            return
+
+        existing = self._positions.get(key)
+        hint = ""
+        if existing and existing.is_valid:
+            hint = f"（当前: 成本{existing.cost} 数量{existing.quantity}）"
+
+        self._prompt_mode = "position"
+        self._alert_target = key
+        self._prompt_container.add_class("visible")
+        self._prompt_input.value = ""
+        self._prompt_label.update(
+            f"为 [bold]{key}[/bold] 设置持仓 {hint}\n"
+            f"格式: [bold]成本 数量[/bold]  例: [bold]420 200[/bold]（买入均价420元，持仓200股）\n"
+            f"留空并回车可删除持仓"
+        )
+        self._prompt_input.focus()
+
+    async def _on_position_submit(self, raw: str) -> None:
+        """Parse and save position from user input."""
+        code = self._alert_target
+        if not code:
+            return
+
+        raw = raw.strip()
+        if not raw:
+            # Delete position
+            self._positions.pop(code, None)
+            save_positions(self.config_path, self._positions)
+            self._table.set_positions(self._positions)
+            self.notify(f"已删除 {code} 的持仓")
+            return
+
+        parts = raw.split()
+        if len(parts) < 2:
+            self.notify("格式: 成本 数量（如 420 200）", severity="error")
+            return
+
+        try:
+            cost = float(parts[0])
+            qty = int(parts[1])
+        except ValueError:
+            self.notify("成本和数量必须是数字", severity="error")
+            return
+
+        if cost <= 0 or qty <= 0:
+            self.notify("成本和数量必须大于0", severity="error")
+            return
+
+        self._positions[code] = Position(cost=cost, quantity=qty)
+        save_positions(self.config_path, self._positions)
+        self._table.set_positions(self._positions)
+        self.notify(f"已设置 {code} 持仓: 成本{cost} 数量{qty}")
 
     # ------------------------------------------------------------------
     # Alerts
@@ -637,6 +1161,48 @@ class StockWatcherApp(App):
         )
         self._prompt_input.focus()
 
+    def action_view_alerts(self) -> None:
+        """Show a popup listing all current alert rules."""
+        items: list[ListItem] = []
+        for alert in self._alerts:
+            quote = self._latest_quotes.get(alert.code)
+            name = quote.name if quote else alert.code
+            status = "已触发" if alert.triggered else "待触发"
+            label = f"{alert.code:12s} {name:10s}  {alert.alert_type.value:14s}  {alert.value:>8.2f}  [{status}]"
+            items.append(ListItem(Label(label)))
+        if not items:
+            self.notify("暂无告警规则", severity="info")
+            return
+
+        self._alert_list_items = items
+        self._alert_viewing = True
+        self._search_list.clear()
+        self._search_list.extend(items)
+        self._search_list.add_class("visible")
+        self.notify("按 d 删除选中告警，Esc 关闭", timeout=3)
+
+    def action_delete_alert(self) -> None:
+        """Delete the alert selected in the alert view popup."""
+        if not self._alert_viewing:
+            return
+        try:
+            idx = self._search_list.index
+            if idx is not None and 0 <= idx < len(self._alerts):
+                removed = self._alerts.pop(idx)
+                self.notify(f"已删除告警: {removed.code} {removed.describe()}")
+                save_alerts(self.config_path, self._alerts)
+                self._update_alert_codes()
+                # Refresh the list
+                self._alert_viewing = False
+                self.action_view_alerts()
+        except Exception:
+            pass
+
+    def _update_alert_codes(self) -> None:
+        """Sync the set of codes-with-alerts to the table."""
+        codes = {a.code for a in self._alerts}
+        self._table._alert_codes = codes
+
     def _check_alerts(self, quote: StockQuote) -> None:
         """Check all alert rules against a new quote and fire if triggered."""
         for alert in self._alerts:
@@ -653,8 +1219,83 @@ class StockWatcherApp(App):
                 alert.triggered = True
                 self._fire_alert(alert, quote)
 
+    # ------------------------------------------------------------------
+    # Alert history
+    # ------------------------------------------------------------------
+
+    def _log_alert_history(self, alert: AlertRule, quote: StockQuote) -> None:
+        """Append an alert firing to the persistent JSONL log."""
+        entry = {
+            "ts": dt.datetime.now(dt.timezone(dt.timedelta(hours=8))).isoformat(),
+            "code": alert.code,
+            "name": quote.name or "",
+            "type": alert.alert_type.value,
+            "threshold": alert.value,
+            "price": quote.price,
+            "change_pct": quote.change_pct,
+        }
+        try:
+            with open(self.alert_history_path, "a", encoding="utf-8") as f:
+                f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+        except OSError:
+            pass
+        self._rotate_alert_history()
+
+    def _rotate_alert_history(self, max_lines: int = 10000, keep: int = 5000) -> None:
+        """Keep alert_history.jsonl bounded by rotating when it exceeds max_lines."""
+        try:
+            path = self.alert_history_path
+            if not path.exists():
+                return
+            lines = path.read_text(encoding="utf-8").rstrip("\n").split("\n")
+            if len(lines) > max_lines:
+                path.write_text("\n".join(lines[-keep:]) + "\n", encoding="utf-8")
+        except OSError:
+            pass
+
+    def _read_alert_history(self, last: int = 200) -> list[str]:
+        """Read the most recent alert history lines (newest first)."""
+        try:
+            path = self.alert_history_path
+            if not path.exists():
+                return []
+            lines = path.read_text(encoding="utf-8").rstrip("\n").split("\n")
+            return lines[-last:][::-1]  # newest first
+        except OSError:
+            return []
+
+    def action_alert_history(self) -> None:
+        """Show recent alert history in a popup."""
+        lines = self._read_alert_history()
+        if not lines:
+            self.notify("暂无告警历史", severity="info")
+            return
+
+        items: list[ListItem] = []
+        for line in lines:
+            try:
+                e = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            price_str = f"{e['price']:.2f}" if e.get("price") else "—"
+            pct_str = f"{e['change_pct']:+.2f}%" if e.get("change_pct") is not None else ""
+            label = (
+                f"{e.get('ts', '')[-8:] or '??:??:??'}  "
+                f"{e.get('code', '?'):12s}  "
+                f"{e.get('type', '?'):14s}  "
+                f"{e.get('threshold', 0):>8.2f}  →  "
+                f"{price_str}  {pct_str}"
+            )
+            items.append(ListItem(Label(label)))
+
+        self._alert_viewing = True
+        self._search_list.clear()
+        self._search_list.extend(items)
+        self._search_list.add_class("visible")
+        self.notify("告警历史（最新200条），Esc 关闭", timeout=3)
+
     def _fire_alert(self, alert: AlertRule, quote: StockQuote) -> None:
-        """Fire an alert: TUI notification + system notification."""
+        """Fire an alert: TUI notification + system notification + sound."""
         msg = f"🚨 {quote.name or alert.code} {alert.describe()}！现价 {quote.price:.2f}"
         self.notify(msg, severity="warning", timeout=10)
 
@@ -667,6 +1308,39 @@ class StockWatcherApp(App):
             )
         except Exception:
             pass  # notify-send not available — that's fine
+
+        # Terminal bell — audible if terminal supports it
+        try:
+            sys.stdout.write("\a")
+            sys.stdout.flush()
+        except Exception:
+            pass
+
+        # OSC escape sequences for native desktop notifications.
+        # Supported by: Windows Terminal, iTerm2, WezTerm, kitty.
+        # Harmless no-op when the terminal doesn't understand them.
+        try:
+            sys.stdout.write(f"\x1b]9;{msg}\x07")   # iTerm2 / WezTerm / Windows Terminal
+            sys.stdout.write(f"\x1b]99;;{msg}\x07")  # kitty
+            sys.stdout.flush()
+        except Exception:
+            pass
+
+        # Optional custom sound command (e.g. "ffplay alarm.mp3")
+        cmd = self._cfg.alert_sound_command.strip()
+        if cmd:
+            try:
+                subprocess.Popen(
+                    cmd,
+                    shell=True,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                )
+            except Exception:
+                pass
+
+        # Log to alert history
+        self._log_alert_history(alert, quote)
 
     async def _on_alert_submit(self, raw: str) -> None:
         """Parse alert specification from user input."""
@@ -698,6 +1372,7 @@ class StockWatcherApp(App):
         self._alerts = [a for a in self._alerts if not (a.code == code and a.alert_type == alert_type)]
         self._alerts.append(AlertRule(code=code, alert_type=alert_type, value=value))
         save_alerts(self.config_path, self._alerts)
+        self._update_alert_codes()
 
         desc = self._alerts[-1].describe()
         self.notify(f"已为 {code} 设置告警: {desc}")
@@ -707,6 +1382,13 @@ class StockWatcherApp(App):
     # ------------------------------------------------------------------
 
     def action_cancel_prompt(self) -> None:
+        # Close alert view if open
+        if self._alert_viewing:
+            self._alert_viewing = False
+            self._hide_search_list()
+            self.set_focus(None)
+            return
+
         self._prompt_mode = None
         self._alert_target = None
         self._prompt_container.remove_class("visible")
@@ -722,6 +1404,9 @@ class StockWatcherApp(App):
             asyncio.create_task(self._on_add_submit(event.value))
         elif self._prompt_mode == "alert":
             asyncio.create_task(self._on_alert_submit(event.value))
+            self.action_cancel_prompt()
+        elif self._prompt_mode == "position":
+            asyncio.create_task(self._on_position_submit(event.value))
             self.action_cancel_prompt()
 
 

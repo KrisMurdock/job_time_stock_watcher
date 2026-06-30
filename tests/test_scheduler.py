@@ -9,6 +9,7 @@ from stock_watcher.scheduler import (
     PollQueue,
     is_a_share_trading_time,
     is_hk_trading_time,
+    is_us_trading_time,
     is_any_market_open,
     TRADING_SCHEDULES,
 )
@@ -70,6 +71,11 @@ class TestIsHKTradingTime:
         t = dt.datetime(2025, 6, 30, 14, 0, 0, tzinfo=dt.timezone(dt.timedelta(hours=8)))
         assert is_hk_trading_time(t) is True
 
+    def test_closing_auction_16_05(self):
+        """16:05 HKT → still trading (closing auction until 16:10)."""
+        t = dt.datetime(2025, 6, 30, 16, 5, 0, tzinfo=dt.timezone(dt.timedelta(hours=8)))
+        assert is_hk_trading_time(t) is True
+
     def test_after_close_16_30(self):
         """16:30 HKT → NOT trading."""
         t = dt.datetime(2025, 6, 30, 16, 30, 0, tzinfo=dt.timezone(dt.timedelta(hours=8)))
@@ -78,6 +84,37 @@ class TestIsHKTradingTime:
     def test_saturday(self):
         t = dt.datetime(2025, 6, 28, 10, 0, 0, tzinfo=dt.timezone(dt.timedelta(hours=8)))
         assert is_hk_trading_time(t) is False
+
+
+class TestIsUSTradingTime:
+    def test_us_open_edt_monday_night(self):
+        """EDT: 21:30-04:00. Monday 22:00 CST should be open."""
+        t = dt.datetime(2025, 6, 30, 22, 0, 0, tzinfo=dt.timezone(dt.timedelta(hours=8)))
+        assert is_us_trading_time(t) is True
+
+    def test_us_open_edt_tuesday_early(self):
+        """EDT: 21:30-04:00. Tuesday 02:00 CST should still be open."""
+        t = dt.datetime(2025, 7, 1, 2, 0, 0, tzinfo=dt.timezone(dt.timedelta(hours=8)))
+        assert is_us_trading_time(t) is True
+
+    def test_us_closed_before_open_edt(self):
+        """EDT: 21:30-04:00. 21:00 CST should be closed."""
+        t = dt.datetime(2025, 6, 30, 21, 0, 0, tzinfo=dt.timezone(dt.timedelta(hours=8)))
+        assert is_us_trading_time(t) is False
+
+    def test_us_closed_after_close_edt(self):
+        """EDT: 21:30-04:00. 05:00 CST should be closed."""
+        t = dt.datetime(2025, 7, 1, 5, 0, 0, tzinfo=dt.timezone(dt.timedelta(hours=8)))
+        assert is_us_trading_time(t) is False
+
+    def test_us_closed_saturday(self):
+        t = dt.datetime(2025, 6, 28, 22, 0, 0, tzinfo=dt.timezone(dt.timedelta(hours=8)))
+        assert is_us_trading_time(t) is False
+
+    def test_us_open_est_winter(self):
+        """EST: 22:30-05:00. December Monday 23:00 CST should be open."""
+        t = dt.datetime(2025, 12, 15, 23, 0, 0, tzinfo=dt.timezone(dt.timedelta(hours=8)))
+        assert is_us_trading_time(t) is True
 
 
 class TestIsAnyMarketOpen:
@@ -90,7 +127,7 @@ class TestIsAnyMarketOpen:
         assert is_any_market_open(t) is False
 
     def test_hk_only_after_a_share_close(self):
-        """15:30 Beijing: A-share closed, HK still open until 16:00."""
+        """15:30 Beijing: A-share closed, HK still open (closing auction until 16:10)."""
         t = dt.datetime(2025, 6, 30, 15, 30, 0, tzinfo=dt.timezone(dt.timedelta(hours=8)))
         assert is_a_share_trading_time(t) is False
         assert is_hk_trading_time(t) is True
@@ -117,6 +154,16 @@ class TestTradingCalendar:
         t = dt.datetime(2025, 6, 28, 10, 0, 0, tzinfo=dt.timezone(dt.timedelta(hours=8)))
         assert cal.is_trading("sh000001", t) is False
         assert cal.is_trading("hk00700", t) is False
+
+    def test_is_trading_us_at_edt(self):
+        cal = TradingCalendar()
+        t = dt.datetime(2025, 6, 30, 22, 0, 0, tzinfo=dt.timezone(dt.timedelta(hours=8)))
+        assert cal.is_trading("usaapl", t) is True
+
+    def test_is_trading_us_closed_weekend(self):
+        cal = TradingCalendar()
+        t = dt.datetime(2025, 6, 28, 22, 0, 0, tzinfo=dt.timezone(dt.timedelta(hours=8)))
+        assert cal.is_trading("usaapl", t) is False
 
     def test_status_string_open(self):
         cal = TradingCalendar()

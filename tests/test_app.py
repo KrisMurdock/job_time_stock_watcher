@@ -242,10 +242,10 @@ class TestSearchByName:
     async def test_name_search_shows_results(self, config_file, mock_sina):
         """Entering a stock name should search and show a selection list."""
         # Mock the suggest API
-        mock_sina.get("https://suggest3.sinajs.cn/suggest/type=11,12,13,14,15&key=腾讯").mock(
+        mock_sina.get("https://suggest3.sinajs.cn/suggest/type=11,12,31,14,15&key=腾讯").mock(
             return_value=httpx.Response(
                 200,
-                text='var suggestvalue="00700,腾讯控股,13;600000,腾讯概念,11";',
+                text='var suggestvalue="腾讯控股,31,00700,00700,腾讯控股;腾讯概念,11,600000,sh600000,腾讯概念";',
             )
         )
         # Also mock the fetch for when we select a result
@@ -278,7 +278,7 @@ class TestSearchByName:
     @pytest.mark.asyncio
     async def test_name_search_no_results(self, config_file, mock_sina):
         """Search with no results should show a warning."""
-        mock_sina.get("https://suggest3.sinajs.cn/suggest/type=11,12,13,14,15&key=zzzz").mock(
+        mock_sina.get("https://suggest3.sinajs.cn/suggest/type=11,12,31,14,15&key=zzzz").mock(
             return_value=httpx.Response(200, text='var suggestvalue="";')
         )
 
@@ -300,10 +300,10 @@ class TestSearchByName:
     @pytest.mark.asyncio
     async def test_name_search_single_result_adds_directly(self, config_file, mock_sina):
         """Single search result should be auto-added without showing the list."""
-        mock_sina.get("https://suggest3.sinajs.cn/suggest/type=11,12,13,14,15&key=腾讯控股").mock(
+        mock_sina.get("https://suggest3.sinajs.cn/suggest/type=11,12,31,14,15&key=腾讯控股").mock(
             return_value=httpx.Response(
                 200,
-                text='var suggestvalue="00700,腾讯控股,13";',
+                text='var suggestvalue="腾讯控股,31,00700,00700,腾讯控股";',
             )
         )
         mock_sina.get("https://qt.gtimg.cn/q=hk00700").mock(

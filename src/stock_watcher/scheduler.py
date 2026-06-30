@@ -10,7 +10,7 @@ from stock_watcher.config import BackoffConfig
 from stock_watcher.models import Market
 
 # ---------------------------------------------------------------------------
-# Trading schedules
+# Trading schedules (all times in CST / UTC+8)
 # ---------------------------------------------------------------------------
 
 TRADING_SCHEDULES = {
@@ -20,8 +20,11 @@ TRADING_SCHEDULES = {
     ],
     "hk": [
         (dt.time(9, 30), dt.time(12, 0)),     # morning session
-        (dt.time(13, 0), dt.time(16, 0)),     # afternoon session
+        (dt.time(13, 0), dt.time(16, 10)),    # afternoon + closing auction
     ],
+    # US trading, Beijing time — spans midnight; handled specially
+    "us_edt": (dt.time(21, 30), dt.time(4, 0)),    # summer (eastern daylight)
+    "us_est": (dt.time(22, 30), dt.time(5, 0)),     # winter (eastern standard)
 }
 
 CST = dt.timezone(dt.timedelta(hours=8))  # China Standard Time (UTC+8)
@@ -46,6 +49,37 @@ def _is_in_any_session(t: dt.datetime, sessions: list[tuple[dt.time, dt.time]]) 
     return False
 
 
+def _is_us_dst(t: dt.datetime) -> bool:
+    """Return True if US Daylight Saving Time is in effect at datetime *t* (CST).
+
+    US DST starts on the 2nd Sunday of March and ends on the 1st Sunday of
+    November.  We check by constructing the transition dates for *t*'s year.
+    """
+    year = t.year
+
+    def _nth_sunday(month: int, n: int) -> dt.date:
+        """Return the date of the n-th Sunday in *month* of *year*."""
+        first = dt.date(year, month, 1)
+        # weekday(): Mon=0 … Sun=6
+        days_until_sunday = (6 - first.weekday()) % 7
+        return first + dt.timedelta(days=days_until_sunday + 7 * (n - 1))
+
+    start_dst = _nth_sunday(3, 2)  # 2nd Sunday in March
+    end_dst = _nth_sunday(11, 1)   # 1st Sunday in November
+
+    today = t.date()
+    return start_dst <= today < end_dst
+
+
+def _is_in_us_session(t: dt.datetime) -> bool:
+    """Return True if *t* (CST) falls within US regular trading hours."""
+    key = "us_edt" if _is_us_dst(t) else "us_est"
+    open_time, close_time = TRADING_SCHEDULES[key]
+    current = t.time()
+    # US session crosses midnight in CST: e.g. 21:30 ≤ t  OR  t < 04:00
+    return current >= open_time or current < close_time
+
+
 def is_a_share_trading_time(t: Optional[dt.datetime] = None) -> bool:
     """Return True if now (or *t*) is during A-share trading hours."""
     if t is None:
@@ -60,9 +94,16 @@ def is_hk_trading_time(t: Optional[dt.datetime] = None) -> bool:
     return _is_weekday(t) and _is_in_any_session(t, TRADING_SCHEDULES["hk"])
 
 
+def is_us_trading_time(t: Optional[dt.datetime] = None) -> bool:
+    """Return True if now (or *t*) is during US trading hours (CST)."""
+    if t is None:
+        t = _now_cst()
+    return _is_weekday(t) and _is_in_us_session(t)
+
+
 def is_any_market_open(t: Optional[dt.datetime] = None) -> bool:
     """Return True if any monitored market is currently open."""
-    return is_a_share_trading_time(t) or is_hk_trading_time(t)
+    return is_a_share_trading_time(t) or is_hk_trading_time(t) or is_us_trading_time(t)
 
 
 # ---------------------------------------------------------------------------
@@ -84,7 +125,11 @@ class TradingCalendar:
 
         if market in (Market.SHANGHAI, Market.SHENZHEN):
             return is_a_share_trading_time(at)
-        return is_hk_trading_time(at)
+        elif market == Market.HONGKONG:
+            return is_hk_trading_time(at)
+        elif market == Market.USA:
+            return is_us_trading_time(at)
+        return False
 
     def status_string(self, at: Optional[dt.datetime] = None) -> str:
         """Return a human-readable status for the current time."""
@@ -93,15 +138,19 @@ class TradingCalendar:
 
         a_open = is_a_share_trading_time(at)
         hk_open = is_hk_trading_time(at)
+        us_open = is_us_trading_time(at)
 
-        if a_open and hk_open:
-            return "A股/港股 交易中"
-        elif a_open:
-            return "A股交易中 · 港股休市"
-        elif hk_open:
-            return "港股交易中 · A股休市"
-        else:
-            return "休市"
+        open_parts: list[str] = []
+        if a_open:
+            open_parts.append("A股")
+        if hk_open:
+            open_parts.append("港股")
+        if us_open:
+            open_parts.append("美股")
+
+        if open_parts:
+            return "、".join(open_parts) + " 交易中"
+        return "休市"
 
 
 # ---------------------------------------------------------------------------
@@ -205,3 +254,57 @@ class PollQueue:
     def has(self, code: str) -> bool:
         """Return True if the code is in the queue."""
         return code in self._codes
+
+
+# ---------------------------------------------------------------------------
+# MarketBackoffManager — per-market backoff isolation
+# ---------------------------------------------------------------------------
+
+
+class MarketBackoffManager:
+    """Manages separate BackoffController instances per market.
+
+    Failures in one market (e.g. A-share) do not delay requests for
+    another market (e.g. HK).
+    """
+
+    def __init__(self, config: "BackoffConfig") -> None:
+        self._config = config
+        self._controllers: dict[str, BackoffController] = {}
+
+    def _market_key(self, code: str) -> str:
+        """Return a market key for the given stock code.
+
+        Uses the two-letter prefix (sh/sz/hk) as the key, collapsing
+        sh + sz into 'a_share' so both mainland exchanges share one
+        controller.
+        """
+        try:
+            market = Market.from_code(code)
+        except ValueError:
+            return "unknown"
+        if market in (Market.SHANGHAI, Market.SHENZHEN):
+            return "a_share"
+        return market.value  # "hk"
+
+    def get(self, code: str) -> BackoffController:
+        """Return (or create) the BackoffController for *code*'s market."""
+        key = self._market_key(code)
+        if key not in self._controllers:
+            self._controllers[key] = BackoffController.from_config(self._config)
+        return self._controllers[key]
+
+    def reset_all(self) -> None:
+        """Reset all controllers (e.g. after config reload)."""
+        self._controllers.clear()
+
+    @property
+    def any_backed_off(self) -> bool:
+        """True if any market is currently in backoff."""
+        return any(c.is_backed_off for c in self._controllers.values())
+
+    @property
+    def max_delay(self) -> float:
+        """The largest current delay across all backed-off markets (0 if none)."""
+        delays = [c.current_delay for c in self._controllers.values() if c.is_backed_off]
+        return max(delays) if delays else 0.0

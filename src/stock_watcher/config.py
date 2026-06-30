@@ -10,7 +10,7 @@ from typing import Any
 
 import yaml
 
-from stock_watcher.models import AlertRule
+from stock_watcher.models import AlertRule, Position
 
 
 # The YAML key for the watchlist
@@ -73,9 +73,12 @@ class AppConfig:
     watchlist: list[str] = field(default_factory=list)
     alerts: list[AlertRule] = field(default_factory=list)
     proxies: list[str] = field(default_factory=list)
+    positions: dict[str, Position] = field(default_factory=dict)
+    alert_sound_command: str = ""  # shell command to play alert sound; empty = bell only
 
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> "AppConfig":
+        pos_raw = d.get("positions", {}) or {}
         return cls(
             poll_interval=float(d.get("poll_interval", 2.5)),
             backoff=BackoffConfig.from_dict(d.get("backoff", {})),
@@ -83,6 +86,8 @@ class AppConfig:
             watchlist=[str(x) for x in d.get("watchlist", [])],
             alerts=[AlertRule.from_config_dict(a) for a in d.get("alerts") or []],
             proxies=[str(x) for x in d.get("proxies", [])],
+            positions={k: Position.from_config(v) for k, v in pos_raw.items()},
+            alert_sound_command=str(d.get("alert_sound_command", "")),
         )
 
 
@@ -158,3 +163,36 @@ def save_alerts(path: Path, alerts: list[AlertRule]) -> None:
         d = rule.to_config_dict()
         items.append(f"code: {d['code']}\n  type: {d['type']}\n  value: {d['value']}")
     _save_yaml_list(path, ALERTS_KEY, items)
+
+
+def save_positions(path: Path, positions: dict[str, "Position"]) -> None:
+    """Persist positions to config.yaml, preserving comments."""
+    key = "positions"
+    if not positions:
+        new_block = f"{key}: {{}}\n"
+    else:
+        lines = [f"{key}:"]
+        for code, pos in positions.items():
+            lines.append(f"  {code}:")
+            lines.append(f"    cost: {pos.cost}")
+            lines.append(f"    quantity: {pos.quantity}")
+        new_block = "\n".join(lines) + "\n"
+
+    if path.exists():
+        text = path.read_text(encoding="utf-8")
+    else:
+        text = ""
+
+    pattern = re.compile(
+        rf"^{re.escape(key)}:.*(?:\n(?:[ \t]+\S.*))*",
+        re.MULTILINE,
+    )
+
+    if pattern.search(text):
+        text = pattern.sub(new_block, text)
+    else:
+        if text and not text.endswith("\n"):
+            text += "\n"
+        text += "\n" + new_block
+
+    path.write_text(text, encoding="utf-8")

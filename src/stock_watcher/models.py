@@ -13,6 +13,7 @@ class Market(Enum):
     SHANGHAI = "sh"
     SHENZHEN = "sz"
     HONGKONG = "hk"
+    USA = "us"
 
     @classmethod
     def from_code(cls, code: str) -> "Market":
@@ -35,9 +36,42 @@ class Market(Enum):
             return False
 
 
+@dataclass
+class Position:
+    """A user's holding in a stock: cost price and quantity."""
+
+    cost: float = 0.0
+    quantity: int = 0
+
+    @property
+    def is_valid(self) -> bool:
+        return self.cost > 0 and self.quantity > 0
+
+    def market_value(self, price: float) -> float:
+        return price * self.quantity
+
+    def pnl(self, price: float) -> float:
+        return (price - self.cost) * self.quantity
+
+    def pnl_pct(self, price: float) -> float:
+        if self.cost == 0:
+            return 0.0
+        return (price - self.cost) / self.cost * 100
+
+    @classmethod
+    def from_config(cls, d: dict) -> "Position":
+        return cls(
+            cost=float(d.get("cost", 0)),
+            quantity=int(d.get("quantity", 0)),
+        )
+
+    def to_config(self) -> dict:
+        return {"cost": self.cost, "quantity": self.quantity}
+
+
 @dataclass(frozen=True)
 class StockQuote:
-    """Immutable snapshot of a stock price at a point in time.
+    """Snapshot of a stock price at a point in time.
 
     Equality is based on `code` only — two quotes for the same stock
     are considered equal regardless of price differences.
@@ -50,6 +84,19 @@ class StockQuote:
     change_amount: Optional[float] = field(default=None, compare=False)
     high: Optional[float] = field(default=None, compare=False)
     low: Optional[float] = field(default=None, compare=False)
+
+    # Extended fields (v2)
+    open: Optional[float] = field(default=None, compare=False)
+    volume: Optional[float] = field(default=None, compare=False)       # shares
+    turnover: Optional[float] = field(default=None, compare=False)     # yuan
+    bid: Optional[float] = field(default=None, compare=False)          # best bid
+    ask: Optional[float] = field(default=None, compare=False)          # best ask
+    bid_prices: list[float] = field(default_factory=list, compare=False)  # 买1-5
+    bid_volumes: list[float] = field(default_factory=list, compare=False)  # 买1-5量
+    ask_prices: list[float] = field(default_factory=list, compare=False)   # 卖1-5
+    ask_volumes: list[float] = field(default_factory=list, compare=False)   # 卖1-5量
+    pe: Optional[float] = field(default=None, compare=False)           # 市盈率 (HK only)
+    market_cap: Optional[float] = field(default=None, compare=False)   # 总市值-亿 (HK only)
 
     @property
     def is_valid(self) -> bool:
