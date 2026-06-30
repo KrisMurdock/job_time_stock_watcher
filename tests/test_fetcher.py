@@ -22,27 +22,33 @@ from stock_watcher.config import RequestConfig
 # ---------------------------------------------------------------------------
 class TestParseSinaResponse:
     def test_parse_valid_shanghai(self):
-        """Real Sina response format for A-share."""
-        text = 'var hq_str_sh000001="上证指数,3250.60,3240.00,3260.00,40.10,1.25,3240.00,3260.00,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,2025-06-30,15:00:00,00,"";'
+        """Real Sina response format for A-share: name,open,prev_close,price,high,low,…"""
+        # open=3240.00, prev_close=3200.00, price=3250.60, high=3260.00, low=3201.00
+        # change_pct = (3250.60-3200)/3200*100 ≈ 1.58
+        # change_amount = 3250.60-3200 = 50.60
+        text = 'var hq_str_sh000001="上证指数,3240.00,3200.00,3250.60,3260.00,3201.00,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,2025-06-30,15:00:00,00,"";'
         quote = parse_sina_response("sh000001", text)
         assert quote.code == "sh000001"
         assert quote.name == "上证指数"
         assert quote.price == 3250.60
-        assert quote.change_pct == 1.25
-        assert quote.change_amount == 40.10
+        assert quote.change_pct == pytest.approx(1.58, abs=0.01)
+        assert quote.change_amount == 50.60
         assert quote.high == 3260.00
-        assert quote.low == 3240.00
+        assert quote.low == 3201.00
 
     def test_parse_valid_shenzhen(self):
-        text = 'var hq_str_sz000001="平安银行,12.50,12.40,12.60,-1.20,-0.15,12.40,12.60,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,2025-06-30,15:00:00,00,"";'
+        # open=12.40, prev_close=12.50, price=12.20, high=12.60, low=12.10
+        # change_pct = (12.20-12.50)/12.50*100 = -2.40
+        # change_amount = 12.20-12.50 = -0.30
+        text = 'var hq_str_sz000001="平安银行,12.40,12.50,12.20,12.60,12.10,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,2025-06-30,15:00:00,00,"";'
         quote = parse_sina_response("sz000001", text)
         assert quote.code == "sz000001"
         assert quote.name == "平安银行"
-        assert quote.price == 12.50
-        assert quote.change_pct == -1.20
-        assert quote.change_amount == -0.15
+        assert quote.price == 12.20
+        assert quote.change_pct == -2.40
+        assert quote.change_amount == -0.30
         assert quote.high == 12.60
-        assert quote.low == 12.40
+        assert quote.low == 12.10
 
     def test_parse_empty_response_returns_invalid_quote(self):
         text = ""
@@ -61,7 +67,7 @@ class TestParseSinaResponse:
         assert not quote.is_valid
 
     def test_parse_with_leading_trailing_whitespace(self):
-        text = '  var hq_str_sh000001="上证指数,3250.60,3240.00,3260.00,40.10,1.25,3240.00,3260.00,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,2025-06-30,15:00:00,00,"";  '
+        text = '  var hq_str_sh000001="上证指数,3240.00,3200.00,3250.60,3260.00,3201.00,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,2025-06-30,15:00:00,00,"";  '
         quote = parse_sina_response("sh000001", text)
         assert quote.is_valid
         assert quote.price == 3250.60
@@ -72,21 +78,45 @@ class TestParseSinaResponse:
 # ---------------------------------------------------------------------------
 class TestParseTencentResponse:
     def test_parse_valid_hk_stock(self):
-        """Real Tencent response format for HK stock."""
-        text = 'v_hk00700="1~腾讯控股~00700~385.600~390.000~382.400~5.200~1.37~385.600~385.800~385.600~0~0~0~0~0~0~0~0~0~0~0~0~0~0~0~0~0~0~0~0~0~0~0~0~0~0~0~0~0~";'
+        """Real Tencent response format for HK stock.
+        Field indices: 0=market, 1=name, 2=code,
+        3=price, 4=prev_close, 5=open, 6=change_amount(?), 7-31…,
+        32=change_pct, 33=high, 34=low
+        """
+        # Build a 60-field ~-delimited string with known values at the right positions
+        fields = [""] * 60
+        fields[1] = "腾讯控股"        # name
+        fields[3] = "385.600"        # price
+        fields[4] = "390.000"        # prev_close
+        fields[5] = "382.400"        # open
+        fields[6] = "5.200"          # (not used directly)
+        fields[32] = "1.37"          # change_pct
+        fields[33] = "392.000"       # high
+        fields[34] = "380.000"       # low
+        text = 'v_hk00700="' + "~".join(fields) + '";'
         quote = parse_tencent_response("hk00700", text)
         assert quote.code == "hk00700"
         assert quote.name == "腾讯控股"
         assert quote.price == 385.60
         assert quote.change_pct == 1.37
         assert quote.change_amount == 5.20
-        assert quote.high == 390.00
-        assert quote.low == 382.40
+        assert quote.high == 392.00
+        assert quote.low == 380.00
 
     def test_parse_negative_change(self):
-        text = 'v_hk00700="1~腾讯控股~00700~380.000~385.000~375.000~-5.000~-1.30~380.000~380.500~380.000~0~0~...~";'
+        # price=380, prev_close=385, change_pct=-1.30, change_amount=-5.00
+        fields = [""] * 60
+        fields[1] = "腾讯控股"
+        fields[3] = "380.000"
+        fields[4] = "385.000"
+        fields[5] = "375.000"
+        fields[32] = "-1.30"
+        fields[33] = "390.000"
+        fields[34] = "375.000"
+        text = 'v_hk00700="' + "~".join(fields) + '";'
         quote = parse_tencent_response("hk00700", text)
         assert quote.change_pct == -1.30
+        # change_amount derived: 380-385 = -5.00
         assert quote.change_amount == -5.00
 
     def test_parse_empty_response(self):
@@ -94,11 +124,13 @@ class TestParseTencentResponse:
         assert not quote.is_valid
 
     def test_parse_wrong_code_in_response(self):
-        """Parser should still work — code is from the request, not the response."""
-        text = 'v_hk00001="1~长和~00001~50.000~...' + '~' * 50 + '";'
+        """Parser should still work — code is from the parameter, not the response."""
+        fields = [""] * 60
+        fields[1] = "长和"
+        fields[3] = "50.000"
+        fields[4] = "50.000"
+        text = 'v_hk00001="' + "~".join(fields) + '";'
         quote = parse_tencent_response("hk00700", text)
-        # The function extracts data from whatever quote is in the response
-        # Code in the returned quote comes from the parameter, not the text
         assert quote.code == "hk00700"
         assert quote.name == "长和"
 
@@ -163,7 +195,7 @@ class TestSinaFetcherIntegration:
         respx_mock.get("https://hq.sinajs.cn/list=sh000001").mock(
             return_value=httpx.Response(
                 200,
-                text='var hq_str_sh000001="上证指数,3250.60,3240.00,3260.00,40.10,1.25,3240.00,3260.00,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,2025-06-30,15:00:00,00,"";',
+                text='var hq_str_sh000001="上证指数,3240.00,3200.00,3250.60,3260.00,3201.00,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,2025-06-30,15:00:00,00,"";',
             )
         )
 
@@ -200,10 +232,17 @@ class TestSinaFetcherIntegration:
 class TestTencentFetcherIntegration:
     @pytest.mark.asyncio
     async def test_fetch_success(self, respx_mock):
+        fields = [""] * 60
+        fields[1] = "腾讯控股"
+        fields[3] = "385.600"
+        fields[4] = "390.000"
+        fields[32] = "1.37"
+        fields[33] = "392.000"
+        fields[34] = "380.000"
         respx_mock.get("https://qt.gtimg.cn/q=hk00700").mock(
             return_value=httpx.Response(
                 200,
-                text='v_hk00700="1~腾讯控股~00700~385.600~390.000~382.400~5.200~1.37~385.600~385.800~385.600~0~0~0~0~0~0~0~0~0~0~0~0~0~0~0~0~0~0~0~0~0~0~0~0~0~0~0~0~0~";',
+                text='v_hk00700="' + "~".join(fields) + '";',
             )
         )
 
