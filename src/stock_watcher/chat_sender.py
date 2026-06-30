@@ -144,7 +144,7 @@ def build_summary_card(
     if pos_codes:
         elements.append({"tag": "div", "text": {"tag": "lark_md", "content": "📦 **持仓信息**"}})
         hdr = "代码      名称    现价      涨跌幅     持仓   可用    成本      市值      盈亏"
-        sep = "────  ────  ──────  ──────  ────  ────  ──────  ────────  ────────"
+        sep = "────  ────  ──────  ──────  ────  ────  ───────  ────────  ────────"
         lines = [hdr, sep]
 
         for code in pos_codes:
@@ -156,7 +156,7 @@ def build_summary_card(
 
             qty = f"{p.quantity:>4d}"
             av  = f"{p.available:>4d}"
-            cst = f"{p.cost:>6.2f}"
+            cst = f"{p.cost:>7.3f}"
 
             if q.price:
                 mval = p.market_value(q.price)
