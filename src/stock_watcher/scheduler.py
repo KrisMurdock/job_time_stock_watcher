@@ -23,8 +23,9 @@ TRADING_SCHEDULES = {
         (dt.time(13, 0), dt.time(16, 10)),    # afternoon + closing auction
     ],
     # US trading, Beijing time — spans midnight; handled specially
-    "us_edt": (dt.time(21, 30), dt.time(4, 0)),    # summer (eastern daylight)
-    "us_est": (dt.time(22, 30), dt.time(5, 0)),     # winter (eastern standard)
+    # Extended hours: pre-market 4:00 + regular 9:30 + after-hours → 20:00 ET
+    "us_edt": (dt.time(16, 0), dt.time(8, 0)),    # summer: 16:00–08:00
+    "us_est": (dt.time(17, 0), dt.time(9, 0)),     # winter: 17:00–09:00
 }
 
 CST = dt.timezone(dt.timedelta(hours=8))  # China Standard Time (UTC+8)

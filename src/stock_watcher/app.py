@@ -749,7 +749,7 @@ class StockWatcherApp(App):
     def on_data_table_header_selected(self, event: DataTable.HeaderSelected) -> None:
         """Handle click on a column header → toggle sort."""
         if event.data_table is self._table:
-            col = event.label.plain
+            col = event.column_key
             self._table._toggle_sort(col)
         event.stop()
 

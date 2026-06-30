@@ -88,31 +88,41 @@ class TestIsHKTradingTime:
 
 class TestIsUSTradingTime:
     def test_us_open_edt_monday_night(self):
-        """EDT: 21:30-04:00. Monday 22:00 CST should be open."""
+        """EDT 16:00–08:00. Monday 22:00 CST should be open."""
         t = dt.datetime(2025, 6, 30, 22, 0, 0, tzinfo=dt.timezone(dt.timedelta(hours=8)))
         assert is_us_trading_time(t) is True
 
     def test_us_open_edt_tuesday_early(self):
-        """EDT: 21:30-04:00. Tuesday 02:00 CST should still be open."""
+        """EDT 16:00–08:00. Tuesday 02:00 CST should still be open."""
         t = dt.datetime(2025, 7, 1, 2, 0, 0, tzinfo=dt.timezone(dt.timedelta(hours=8)))
         assert is_us_trading_time(t) is True
 
-    def test_us_closed_before_open_edt(self):
-        """EDT: 21:30-04:00. 21:00 CST should be closed."""
-        t = dt.datetime(2025, 6, 30, 21, 0, 0, tzinfo=dt.timezone(dt.timedelta(hours=8)))
+    def test_us_open_edt_premarket(self):
+        """EDT 16:00–08:00. 18:00 CST (pre-market) should be open."""
+        t = dt.datetime(2025, 6, 30, 18, 0, 0, tzinfo=dt.timezone(dt.timedelta(hours=8)))
+        assert is_us_trading_time(t) is True
+
+    def test_us_open_edt_afterhours(self):
+        """EDT 16:00–08:00. 06:00 CST (after-hours) should be open."""
+        t = dt.datetime(2025, 7, 1, 6, 0, 0, tzinfo=dt.timezone(dt.timedelta(hours=8)))
+        assert is_us_trading_time(t) is True
+
+    def test_us_closed_before_premarket_edt(self):
+        """EDT 16:00–08:00. 15:00 CST should be closed."""
+        t = dt.datetime(2025, 6, 30, 15, 0, 0, tzinfo=dt.timezone(dt.timedelta(hours=8)))
         assert is_us_trading_time(t) is False
 
     def test_us_closed_after_close_edt(self):
-        """EDT: 21:30-04:00. 05:00 CST should be closed."""
-        t = dt.datetime(2025, 7, 1, 5, 0, 0, tzinfo=dt.timezone(dt.timedelta(hours=8)))
+        """EDT 16:00–08:00. 09:00 CST should be closed."""
+        t = dt.datetime(2025, 7, 1, 9, 0, 0, tzinfo=dt.timezone(dt.timedelta(hours=8)))
         assert is_us_trading_time(t) is False
 
     def test_us_closed_saturday(self):
-        t = dt.datetime(2025, 6, 28, 22, 0, 0, tzinfo=dt.timezone(dt.timedelta(hours=8)))
+        t = dt.datetime(2025, 6, 28, 18, 0, 0, tzinfo=dt.timezone(dt.timedelta(hours=8)))
         assert is_us_trading_time(t) is False
 
     def test_us_open_est_winter(self):
-        """EST: 22:30-05:00. December Monday 23:00 CST should be open."""
+        """EST 17:00–09:00. December Monday 23:00 CST should be open."""
         t = dt.datetime(2025, 12, 15, 23, 0, 0, tzinfo=dt.timezone(dt.timedelta(hours=8)))
         assert is_us_trading_time(t) is True
 
