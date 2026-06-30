@@ -91,7 +91,7 @@ def build_summary_card(
 
     # Header
     if has_positions:
-        header = "代码  名称  现价  涨跌幅  持仓  成本  市值"
+        header = "代码  名称  现价  涨跌幅  持仓  可用  成本  市值"
     else:
         header = "代码  名称  现价  涨跌幅"
 
@@ -106,9 +106,10 @@ def build_summary_card(
         if has_positions:
             pos = positions.get(code)
             qty = str(pos.quantity) if pos and pos.is_valid else "—"
+            avail = str(pos.available) if pos and pos.is_valid else "—"
             cost = f"{pos.cost:.2f}" if pos and pos.is_valid else "—"
             mval = f"{pos.market_value(q.price or 0):.0f}" if pos and pos.is_valid and q.price else "—"
-            row += f"  {qty}股  {cost}  {mval}"
+            row += f"  {qty}股  {avail}股  {cost}  {mval}"
 
         lines.append(row)
 

@@ -126,6 +126,7 @@ class StockTable(DataTable):
     COL_HIGH = "最高"
     COL_LOW = "最低"
     COL_QTY = "持仓量"
+    COL_AVAIL = "可用"
     COL_COST = "成本价"
     COL_MVAL = "市值"
     COL_PNL = "盈亏"
@@ -146,6 +147,7 @@ class StockTable(DataTable):
         "最高": "最高",
         "最低": "最低",
         "持仓量": "持仓量",
+        "可用": "可用",
         "成本价": "成本价",
         "市值": "市值",
         "盈亏": "盈亏",
@@ -182,6 +184,7 @@ class StockTable(DataTable):
             self.COL_HIGH,
             self.COL_LOW,
             self.COL_QTY,
+            self.COL_AVAIL,
             self.COL_COST,
             self.COL_MVAL,
             self.COL_PNL,
@@ -208,6 +211,7 @@ class StockTable(DataTable):
             self._fmt_price(quote.high),
             self._fmt_price(quote.low),
             self._fmt_qty(pos),
+            self._fmt_qty_avail(pos),
             self._fmt_price(pos.cost if pos and pos.is_valid else None),
             self._fmt_mval(pos, quote.price),
             self._fmt_pnl(pos, quote.price),
@@ -231,6 +235,7 @@ class StockTable(DataTable):
             self.COL_HIGH: quote.high or 0.0,
             self.COL_LOW: quote.low or 0.0,
             self.COL_QTY: pos.quantity if pos else 0,
+            self.COL_AVAIL: pos.available if pos else 0,
             self.COL_COST: pos.cost if pos and pos.is_valid else 0.0,
             self.COL_MVAL: pos.market_value(price) if pos and pos.is_valid else 0.0,
             self.COL_PNL: pos.pnl(price) if pos and pos.is_valid else 0.0,
@@ -366,6 +371,12 @@ class StockTable(DataTable):
         return f"{pos.quantity:>6d}"
 
     @staticmethod
+    def _fmt_qty_avail(pos: Optional[Position]) -> str:
+        if pos is None or not pos.is_valid:
+            return "     —"
+        return f"{pos.available:>5d}"
+
+    @staticmethod
     def _fmt_mval(pos: Optional[Position], price: Optional[float]) -> str:
         if pos is None or not pos.is_valid or price is None:
             return "        —"
@@ -481,7 +492,7 @@ class DetailModal(ModalScreen[None]):
         # Position
         if pos and pos.is_valid:
             log.write("\n  [bold]持仓[/]")
-            log.write(f"  成本  {pos.cost:.2f}  数量  {pos.quantity}  市值  {pos.market_value(price):.2f}")
+            log.write(f"  持仓  {pos.quantity}  可用  {pos.available}  成本  {pos.cost:.2f}  市值  {pos.market_value(price):.2f}")
             pnl = pos.pnl(price)
             pnlp = pos.pnl_pct(price)
             sign = "+" if pnl > 0 else ""

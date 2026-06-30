@@ -38,10 +38,11 @@ class Market(Enum):
 
 @dataclass
 class Position:
-    """A user's holding in a stock: cost price and quantity."""
+    """A user's holding in a stock: cost, total quantity, and available shares."""
 
     cost: float = 0.0
-    quantity: int = 0
+    quantity: int = 0      # 持仓股数（总持有）
+    available: int = 0      # 可用股数（可交易）
 
     @property
     def is_valid(self) -> bool:
@@ -63,10 +64,11 @@ class Position:
         return cls(
             cost=float(d.get("cost", 0)),
             quantity=int(d.get("quantity", 0)),
+            available=int(d.get("available", 0)),
         )
 
     def to_config(self) -> dict:
-        return {"cost": self.cost, "quantity": self.quantity}
+        return {"cost": self.cost, "quantity": self.quantity, "available": self.available}
 
 
 @dataclass(frozen=True)

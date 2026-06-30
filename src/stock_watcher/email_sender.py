@@ -42,7 +42,7 @@ def _build_summary_html(
 
     hdr = "<th>代码</th><th>名称</th><th>现价</th><th>涨跌幅</th>"
     if has_positions:
-        hdr += "<th>持仓</th><th>成本</th><th>市值</th><th>盈亏</th>"
+        hdr += "<th>持仓</th><th>可用</th><th>成本</th><th>市值</th><th>盈亏</th>"
 
     rows = ""
     for code, q in sorted(quotes.items()):
@@ -58,6 +58,7 @@ def _build_summary_html(
             pos = positions.get(code)
             if pos and pos.is_valid:
                 qty = str(pos.quantity)
+                avail = str(pos.available)
                 cost = f"{pos.cost:.2f}"
                 mval = f"{pos.market_value(q.price or 0):.0f}"
                 pnl_val = pos.pnl(q.price or 0)
@@ -65,11 +66,12 @@ def _build_summary_html(
                 pnl_color = "#27ae60" if pnl_val >= 0 else "#e74c3c"
                 rows += f"""
             <td>{qty}股</td>
+            <td>{avail}股</td>
             <td>{cost}</td>
             <td>{mval}</td>
             <td style="color:{pnl_color}">{pnl_str}</td>"""
             else:
-                rows += "<td>—</td><td>—</td><td>—</td><td>—</td>"
+                rows += "<td>—</td><td>—</td><td>—</td><td>—</td><td>—</td>"
 
         rows += "\n</tr>\n"
 
