@@ -169,11 +169,11 @@ class StockWatcherApp(App):
         height: 3;
         background: $panel;
         padding: 0 1;
-        display: none;
+        visibility: hidden;
     }
 
     #prompt_container.visible {
-        display: block;
+        visibility: visible;
     }
 
     #prompt_label {
@@ -241,6 +241,18 @@ class StockWatcherApp(App):
 
         # Kick off polling
         self._poll_loop()
+
+    def check_action(self, action: str, parameters: tuple[object, ...]) -> bool | None:
+        """Block app-level bindings when the add-stock prompt is active.
+
+        When the prompt Input is focused, keystrokes should go to the input,
+        not trigger app actions. Returning False disables the action.
+        """
+        if self._prompt_mode is not None:
+            # Only allow escape (cancel) and the Input's own handling
+            if action in ("add_stock", "delete_stock", "manual_refresh", "quit"):
+                return False
+        return True
 
     # ------------------------------------------------------------------
     # Polling
