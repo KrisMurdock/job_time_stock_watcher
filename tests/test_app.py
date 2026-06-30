@@ -198,10 +198,19 @@ class TestDeleteStock:
         app = StockWatcherApp(config_path=Path(config_file))
 
         async with app.run_test() as pilot:
-            # Wait for background poll to populate the table
-            await pilot.pause(0.5)
+            # Manually populate the table (bypass trading-hours check in poll loop)
+            from stock_watcher.models import StockQuote
+            q = StockQuote(code="sh000001", name="上证指数", price=3250.0,
+                           change_pct=1.25, change_amount=40.0,
+                           high=3260.0, low=3240.0)
+            app._latest_quotes["sh000001"] = q
+            app._table.update_quote(q)
+            await pilot.pause(0.1)
+
+            assert app._table.row_count >= 1
             initial_size = app._queue.size
-            assert initial_size >= 1
+            app._table.focus()
+            await pilot.pause(0.1)
             await pilot.press("d")
             # The highlighted row (initial stock) should be removed
             assert app._queue.size == initial_size - 1

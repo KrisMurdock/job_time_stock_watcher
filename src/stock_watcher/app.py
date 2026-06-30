@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import datetime as dt
+import os
 import subprocess
 import time
 from pathlib import Path
@@ -329,6 +330,7 @@ class StockWatcherApp(App):
     def on_mount(self) -> None:
         try:
             self._cfg = load_config(self.config_path)
+            self._config_mtime = os.path.getmtime(self.config_path)
         except FileNotFoundError:
             self.notify(f"配置文件未找到: {self.config_path}", severity="error")
             self.exit()
@@ -377,6 +379,9 @@ class StockWatcherApp(App):
     @work(exclusive=False)
     async def _poll_loop(self) -> None:
         while not self._stopped:
+            # Check for config file changes
+            self._reload_config_if_changed()
+
             code = self._queue.next()
 
             if code is None:
@@ -439,6 +444,63 @@ class StockWatcherApp(App):
         sb.up_count = sum(1 for q in quotes if q.direction == "up")
         sb.down_count = sum(1 for q in quotes if q.direction == "down")
         sb.flat_count = sb.total - sb.up_count - sb.down_count
+
+    # ------------------------------------------------------------------
+    # Config hot-reload
+    # ------------------------------------------------------------------
+
+    def _reload_config_if_changed(self) -> None:
+        """Reload config.yaml if it was modified externally."""
+        try:
+            mtime = os.path.getmtime(self.config_path)
+        except OSError:
+            return
+
+        if mtime <= self._config_mtime:
+            return
+
+        self._config_mtime = mtime
+
+        try:
+            new_cfg = load_config(self.config_path)
+        except Exception:
+            self.notify("配置文件变更但解析失败，保留当前配置", severity="warning")
+            return
+
+        # Sync watchlist: add new codes, remove deleted codes
+        new_watchlist = set(new_cfg.watchlist)
+        old_watchlist = set(self._queue.all_codes)
+
+        added = new_watchlist - old_watchlist
+        removed = old_watchlist - new_watchlist
+
+        for code in sorted(removed):
+            self._queue.remove(code)
+            self._table.remove_row_by_key(code)
+            self._latest_quotes.pop(code, None)
+            self._alerts = [a for a in self._alerts if a.code != code]
+
+        for code in sorted(added):
+            if Market.is_valid_code(code):
+                self._queue.add(code)
+                asyncio.create_task(self._fetch_one(code))
+
+        # Sync alerts
+        self._alerts = list(new_cfg.alerts)
+
+        # Sync poll interval and backoff
+        self._poll_interval = new_cfg.poll_interval
+        self._backoff = BackoffController.from_config(new_cfg.backoff)
+
+        if added or removed:
+            names = []
+            if added:
+                names.append(f"+{len(added)}只")
+            if removed:
+                names.append(f"-{len(removed)}只")
+            self.notify(f"配置文件已更新（{'，'.join(names)}）")
+
+        self._update_status()
 
     # ------------------------------------------------------------------
     # Manual refresh

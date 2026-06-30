@@ -81,7 +81,7 @@ class AppConfig:
             backoff=BackoffConfig.from_dict(d.get("backoff", {})),
             request=RequestConfig.from_dict(d.get("request", {})),
             watchlist=[str(x) for x in d.get("watchlist", [])],
-            alerts=[AlertRule.from_config_dict(a) for a in d.get("alerts", [])],
+            alerts=[AlertRule.from_config_dict(a) for a in d.get("alerts") or []],
             proxies=[str(x) for x in d.get("proxies", [])],
         )
 
