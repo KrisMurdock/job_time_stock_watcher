@@ -64,6 +64,37 @@ class RequestConfig:
 
 
 # ---------------------------------------------------------------------------
+# ChatConfig (Feishu / DingTalk webhook)
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class ChatConfig:
+    """Chat bot webhook configuration."""
+
+    feishu_webhook: str = ""   # Feishu custom bot webhook URL
+    feishu_secret: str = ""    # optional HMAC-SHA256 signing secret
+
+    @property
+    def is_configured(self) -> bool:
+        """Return True if at least the webhook URL is set."""
+        return bool(self.feishu_webhook)
+
+    @classmethod
+    def from_dict(cls, d: dict[str, Any]) -> "ChatConfig":
+        return cls(
+            feishu_webhook=str(d.get("feishu_webhook", "")),
+            feishu_secret=str(d.get("feishu_secret", "")),
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "feishu_webhook": self.feishu_webhook,
+            "feishu_secret": self.feishu_secret,
+        }
+
+
+# ---------------------------------------------------------------------------
 # EmailConfig
 # ---------------------------------------------------------------------------
 
@@ -119,6 +150,7 @@ class AppConfig:
     positions: dict[str, Position] = field(default_factory=dict)
     alert_sound_command: str = ""
     email: Optional[EmailConfig] = None
+    chat: Optional[ChatConfig] = None
 
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> "AppConfig":
@@ -134,6 +166,7 @@ class AppConfig:
             positions={k: Position.from_config(v) for k, v in pos_raw.items()},
             alert_sound_command=str(d.get("alert_sound_command", "")),
             email=EmailConfig.from_dict(email_raw) if email_raw else None,
+            chat=ChatConfig.from_dict(d.get("chat", {})) if d.get("chat") else None,
         )
 
 

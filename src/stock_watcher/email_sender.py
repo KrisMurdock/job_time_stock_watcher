@@ -4,11 +4,11 @@ from __future__ import annotations
 
 import asyncio
 import datetime as dt
+import html
 import smtplib
 import textwrap
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
-from typing import Optional
 
 from stock_watcher.config import EmailConfig
 from stock_watcher.models import StockQuote
@@ -20,10 +20,10 @@ def _build_alert_html(code: str, name: str, rule_desc: str, price: float) -> str
     <html><body style="font-family:sans-serif">
       <h2 style="color:#e74c3c">⚠️ 股票告警触发</h2>
       <table style="border-collapse:collapse;width:100%">
-        <tr><td><b>代码</b></td><td>{code}</td></tr>
-        <tr><td><b>名称</b></td><td>{name}</td></tr>
+        <tr><td><b>代码</b></td><td>{html.escape(code)}</td></tr>
+        <tr><td><b>名称</b></td><td>{html.escape(name)}</td></tr>
         <tr><td><b>现价</b></td><td>{price:.2f}</td></tr>
-        <tr><td><b>条件</b></td><td>{rule_desc}</td></tr>
+        <tr><td><b>条件</b></td><td>{html.escape(rule_desc)}</td></tr>
       </table>
       <p style="color:#888;font-size:small">— Stock Watcher</p>
     </body></html>
@@ -38,9 +38,9 @@ def _build_summary_html(quotes: dict[str, StockQuote]) -> str:
         price = f"{q.price:.2f}" if q.price is not None else "—"
         color = "#27ae60" if q.change_pct is not None and q.change_pct >= 0 else "#e74c3c"
         rows += f"""<tr>
-            <td>{code}</td><td>{q.name or "—"}</td>
+            <td>{html.escape(code)}</td><td>{html.escape(q.name or "—")}</td>
             <td>{price}</td>
-            <td style="color:{color}">{pct}</td>
+            <td style="color:{color}">{html.escape(pct)}</td>
         </tr>\n"""
 
     return textwrap.dedent(f"""\
@@ -74,10 +74,15 @@ async def send_email(
     msg.attach(MIMEText(body_html, "html", "utf-8"))
 
     def _send() -> None:
-        with smtplib.SMTP(cfg.smtp_host, cfg.smtp_port, timeout=15) as smtp:
-            smtp.starttls()
-            smtp.login(cfg.username, cfg.password)
-            smtp.send_message(msg)
+        if cfg.smtp_port == 465:
+            with smtplib.SMTP_SSL(cfg.smtp_host, cfg.smtp_port, timeout=15) as smtp:
+                smtp.login(cfg.username, cfg.password)
+                smtp.send_message(msg)
+        else:
+            with smtplib.SMTP(cfg.smtp_host, cfg.smtp_port, timeout=15) as smtp:
+                smtp.starttls()
+                smtp.login(cfg.username, cfg.password)
+                smtp.send_message(msg)
 
     try:
         await asyncio.to_thread(_send)
@@ -102,10 +107,15 @@ def send_email_sync(
     msg.attach(MIMEText(body_html, "html", "utf-8"))
 
     try:
-        with smtplib.SMTP(cfg.smtp_host, cfg.smtp_port, timeout=15) as smtp:
-            smtp.starttls()
-            smtp.login(cfg.username, cfg.password)
-            smtp.send_message(msg)
+        if cfg.smtp_port == 465:
+            with smtplib.SMTP_SSL(cfg.smtp_host, cfg.smtp_port, timeout=15) as smtp:
+                smtp.login(cfg.username, cfg.password)
+                smtp.send_message(msg)
+        else:
+            with smtplib.SMTP(cfg.smtp_host, cfg.smtp_port, timeout=15) as smtp:
+                smtp.starttls()
+                smtp.login(cfg.username, cfg.password)
+                smtp.send_message(msg)
         return True
     except Exception:
         return False

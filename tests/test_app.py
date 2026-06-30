@@ -403,14 +403,16 @@ class TestColumnSort:
 
     def test_on_header_selected_uses_column_key(self):
         """Verify the fix: on_data_table_header_selected passes
-        event.column_key (not event.label.plain)."""
+        event.column_key.value (not str(event.column_key))."""
         from stock_watcher.app import StockWatcherApp, StockTable
         from textual.widgets import DataTable
+        from textual.widgets._data_table import ColumnKey
         from unittest.mock import MagicMock, PropertyMock
 
-        # Create a mock event
+        # Create a mock event with a real ColumnKey
         event = MagicMock(spec=DataTable.HeaderSelected)
-        type(event).column_key = PropertyMock(return_value="涨跌幅")
+        ckey = ColumnKey("涨跌幅")
+        type(event).column_key = PropertyMock(return_value=ckey)
         type(event).label = PropertyMock()
         event.label.plain = "涨跌幅 ▲"  # label has arrow after sort
 
@@ -432,6 +434,6 @@ class TestColumnSort:
         # Call the handler as the real code would
         StockWatcherApp.on_data_table_header_selected(app, event)
 
-        # After fix: should use column_key ("涨跌幅") → second click → reverse
+        # After fix: should use column_key.value ("涨跌幅") → second click → reverse
         assert table._sort_col == "涨跌幅"
         assert table._sort_reverse is True

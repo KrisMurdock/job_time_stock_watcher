@@ -6,6 +6,7 @@ import asyncio
 import datetime as dt
 import json
 import os
+import shlex
 import subprocess
 import sys
 import time
@@ -740,6 +741,7 @@ class StockWatcherApp(App):
         self._alerts: list[AlertRule] = list(self._cfg.alerts)
         self._positions: dict[str, Position] = dict(self._cfg.positions)
         self._email_cfg = self._cfg.email
+        self._chat_cfg = self._cfg.chat
         self._update_alert_codes()
         self._table.set_positions(self._positions)
 
@@ -760,8 +762,9 @@ class StockWatcherApp(App):
     def on_data_table_header_selected(self, event: DataTable.HeaderSelected) -> None:
         """Handle click on a column header → toggle sort."""
         if event.data_table is self._table:
-            col = str(event.column_key)
-            self._table._toggle_sort(col)
+            col = event.column_key.value
+            if col is not None:
+                self._table._toggle_sort(col)
         event.stop()
 
     # ------------------------------------------------------------------
@@ -924,6 +927,13 @@ class StockWatcherApp(App):
             if ok:
                 _sent_today = today_str
 
+            # Feishu daily summary
+            if self._chat_cfg and self._chat_cfg.is_configured:
+                from stock_watcher.chat_sender import build_summary_card, send_feishu_card
+
+                card = build_summary_card(self._latest_quotes)
+                await send_feishu_card(self._chat_cfg, card)
+
     def _update_status(self) -> None:
         sb = self._status_bar
         sb.status = self._calendar.status_string()
@@ -988,6 +998,9 @@ class StockWatcherApp(App):
         # Sync poll interval and backoff
         self._poll_interval = new_cfg.poll_interval
         self._backoff = MarketBackoffManager(new_cfg.backoff)
+        self._cfg = new_cfg  # keep settings panel in sync
+        self._email_cfg = new_cfg.email
+        self._chat_cfg = new_cfg.chat
 
         if added or removed:
             names = []
@@ -1379,8 +1392,7 @@ class StockWatcherApp(App):
         if cmd:
             try:
                 subprocess.Popen(
-                    cmd,
-                    shell=True,
+                    shlex.split(cmd),
                     stdout=subprocess.DEVNULL,
                     stderr=subprocess.DEVNULL,
                 )
@@ -1398,6 +1410,19 @@ class StockWatcherApp(App):
             asyncio.create_task(
                 send_email(self._email_cfg, subject, html)
             )
+
+        # Feishu webhook notification (non-blocking)
+        if self._chat_cfg and self._chat_cfg.is_configured:
+            from stock_watcher.chat_sender import build_alert_card, send_feishu_card
+
+            card = build_alert_card(
+                alert.code,
+                quote.name or alert.code,
+                alert.describe(),
+                quote.price or 0,
+                quote.change_pct,
+            )
+            asyncio.create_task(send_feishu_card(self._chat_cfg, card))
 
         # Log to alert history
         self._log_alert_history(alert, quote)
