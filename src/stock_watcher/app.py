@@ -769,6 +769,15 @@ class StockWatcherApp(App):
             self.exit()
             return
 
+        self._positions_mtime = 0.0
+        pos_path = self.config_path.with_name("positions.yaml")
+        try:
+            self._positions_mtime = os.path.getmtime(pos_path)
+        except OSError:
+            pass
+            self.exit()
+            return
+
         self._calendar = TradingCalendar()
         self._queue = PollQueue(list(self._cfg.watchlist))
         self._backoff = MarketBackoffManager(self._cfg.backoff)
@@ -1022,16 +1031,23 @@ class StockWatcherApp(App):
     # ------------------------------------------------------------------
 
     def _reload_config_if_changed(self) -> None:
-        """Reload config.yaml if it was modified externally."""
+        """Reload config.yaml and positions.yaml if modified externally."""
         try:
-            mtime = os.path.getmtime(self.config_path)
+            cfg_mtime = os.path.getmtime(self.config_path)
         except OSError:
+            cfg_mtime = 0.0
+
+        pos_path = self.config_path.with_name("positions.yaml")
+        try:
+            pos_mtime = os.path.getmtime(pos_path)
+        except OSError:
+            pos_mtime = 0.0
+
+        if cfg_mtime <= self._config_mtime and pos_mtime <= self._positions_mtime:
             return
 
-        if mtime <= self._config_mtime:
-            return
-
-        self._config_mtime = mtime
+        self._config_mtime = cfg_mtime
+        self._positions_mtime = pos_mtime
 
         try:
             new_cfg = load_config(self.config_path)
@@ -1061,9 +1077,13 @@ class StockWatcherApp(App):
         self._alerts = list(new_cfg.alerts)
         self._update_alert_codes()
 
-        # Sync positions
+        # Sync positions (from positions.yaml, loaded by load_config)
+        old_positions = dict(self._positions)
         self._positions = dict(new_cfg.positions)
         self._table.set_positions(self._positions)
+
+        if self._positions != old_positions:
+            self._update_status()  # refresh portfolio bar immediately
 
         # Sync poll interval and backoff
         self._poll_interval = new_cfg.poll_interval
