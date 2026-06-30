@@ -893,6 +893,38 @@ class StockWatcherApp(App):
         self._daily_summary_loop()
         self._bot_server_loop()
 
+    async def _bot_server_loop(self) -> None:
+        """Background worker that polls Feishu for @mentions & replies via DeepSeek."""
+        if not self._chat_cfg or not self._chat_cfg.can_receive:
+            return
+
+        from stock_watcher.bot_server import run_bot_server
+        from stock_watcher.chat_sender import _get_hkd_cny_rate
+
+        self._bot_stop = asyncio.Event()
+
+        def _get_quotes():
+            return dict(self._latest_quotes)
+
+        def _get_positions():
+            return dict(self._positions)
+
+        async def _get_rate():
+            return await _get_hkd_cny_rate()
+
+        def _notify(msg: str):
+            self.call_from_thread(self.notify, msg)
+
+        await run_bot_server(
+            self._chat_cfg,
+            self._deepseek_cfg,
+            _get_quotes,
+            _get_positions,
+            _get_rate,
+            _notify,
+            self._bot_stop,
+        )
+
     # ------------------------------------------------------------------
     # Column sort
     # ------------------------------------------------------------------
