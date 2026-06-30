@@ -39,6 +39,7 @@ from stock_watcher.scheduler import (
     MarketBackoffManager,
     _now_cst,
     _is_weekday,
+    is_any_market_open,
 )
 
 
@@ -951,45 +952,46 @@ class StockWatcherApp(App):
 
     @work(exclusive=False)
     async def _daily_summary_loop(self) -> None:
-        """Check once a minute and send daily summary after all markets close."""
-        _sent_today: str = ""  # date string of last sent summary
+        """Push summaries on a schedule: every 3 min during trading, every 1 hr closed."""
+        last_push: float = 0.0  # monotonic timestamp of last push
 
         while not self._stopped:
-            await asyncio.sleep(60)
+            await asyncio.sleep(30)
 
-            if not self._email_cfg or not self._email_cfg.is_configured:
-                continue
             if not self._latest_quotes:
                 continue
 
             now = _now_cst()
-            today_str = now.strftime("%Y-%m-%d")
-            if _sent_today == today_str:
-                continue
-
-            # Only send summary on weekdays, after the LAST market closes.
-            # US after-hours ends at 08:00/09:00 CST, which is the final close of the day.
             if not _is_weekday(now):
                 continue
 
-            # All markets have closed for the day: US after-hours is 08:00/09:00 CST.
-            # We send the summary at 09:05 CST (5-min buffer).
-            if not (now.hour == 9 and now.minute >= 5 and now.minute < 10):
+            # Determine push interval based on market status
+            any_open = is_any_market_open(now)
+            interval = 180 if any_open else 3600  # 3 min vs 1 hour
+
+            elapsed = time.monotonic() - last_push
+            if elapsed < interval:
                 continue
 
-            from stock_watcher.email_sender import build_summary_email, send_email
+            # Push summary via email + Feishu
+            pushed = False
 
-            subject, html = build_summary_email(self._latest_quotes, self._positions)
-            ok = await send_email(self._email_cfg, subject, html)
-            if ok:
-                _sent_today = today_str
+            if self._email_cfg and self._email_cfg.is_configured:
+                from stock_watcher.email_sender import build_summary_email, send_email
 
-            # Feishu daily summary
+                subject, html = build_summary_email(self._latest_quotes, self._positions)
+                ok = await send_email(self._email_cfg, subject, html)
+                pushed = pushed or ok
+
             if self._chat_cfg and self._chat_cfg.is_configured:
                 from stock_watcher.chat_sender import build_summary_card, send_feishu_card
 
                 card = build_summary_card(self._latest_quotes, self._positions)
-                await send_feishu_card(self._chat_cfg, card)
+                ok = await send_feishu_card(self._chat_cfg, card)
+                pushed = pushed or ok
+
+            if pushed:
+                last_push = time.monotonic()
 
     def _update_status(self) -> None:
         sb = self._status_bar
