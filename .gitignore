@@ -12,3 +12,4 @@ htmlcov/
 .ruff_cache/
 reasonix.toml
 config.yaml
+positions.yaml
