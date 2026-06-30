@@ -19,6 +19,31 @@ if TYPE_CHECKING:
 
 FEISHU_WEBHOOK_TIMEOUT = 10  # seconds
 
+# ---------------------------------------------------------------------------
+# HKD → CNY exchange rate (cached per session)
+# ---------------------------------------------------------------------------
+
+_hkd_cny_rate: float | None = None
+
+
+async def _get_hkd_cny_rate() -> float:
+    """Fetch current HKD/CNY rate from a free API, cached per process."""
+    global _hkd_cny_rate
+    if _hkd_cny_rate is not None:
+        return _hkd_cny_rate
+    try:
+        async with httpx.AsyncClient(timeout=5) as c:
+            r = await c.get("https://open.er-api.com/v6/latest/HKD")
+            data = r.json()
+            _hkd_cny_rate = float(data["rates"].get("CNY", 0.92))
+    except Exception:
+        _hkd_cny_rate = 0.92  # fallback
+    return _hkd_cny_rate
+
+
+def _is_hk(code: str) -> bool:
+    return code.startswith("hk")
+
 
 def _generate_sign(timestamp_seconds: int, secret: str) -> str:
     """Generate HMAC-SHA256 signature for Feishu webhook verification."""
@@ -115,12 +140,13 @@ def build_alert_card(
 # Summary card — column_set table layout
 # ---------------------------------------------------------------------------
 
-def build_summary_card(
+async def build_summary_card(
     quotes: dict[str, StockQuote],
     positions: dict[str, "Position"] | None = None,
 ) -> dict:
     positions = positions or {}
     now_str = dt.datetime.now(dt.timezone(dt.timedelta(hours=8))).strftime("%Y-%m-%d %H:%M")
+    rate = await _get_hkd_cny_rate() if any(_is_hk(c) for c in quotes) else 1.0
 
     pos_codes = [c for c in sorted(quotes)
                  if (p := positions.get(c)) and p.is_valid]
@@ -138,17 +164,22 @@ def build_summary_card(
         for code in pos_codes:
             q = quotes[code]
             p = positions[code]
+            is_hk = _is_hk(code)
+            r = rate if is_hk else 1.0
+
             pct_s = _color_pct(q.change_pct)
-            price_s = f"{q.price:.2f}" if q.price else "—"
+            raw_price = q.price or 0
+            price_s = f"{raw_price * r:.2f}" if q.price else "—"
             name_s = (q.name or "—")[:4]
             qty_s = str(p.quantity)
             av_s = str(p.available)
-            cst_s = f"{p.cost:.3f}"
+            cst_s = f"{p.cost * r:.3f}"
 
             if q.price:
-                mval = p.market_value(q.price)
+                mval = p.market_value(raw_price) * r
                 mv_s = f"{mval:,.0f}"
-                pnl_s = _color_pnl(p.pnl(q.price))
+                pnl_val = p.pnl(raw_price) * r
+                pnl_s = _color_pnl(pnl_val)
                 total_mval += mval
             else:
                 mv_s = "—"
@@ -166,7 +197,10 @@ def build_summary_card(
                 _cell("72px", pnl_s),
             ]))
 
-        total_pnl = sum(positions[c].pnl(quotes[c].price or 0) for c in pos_codes)
+        total_pnl = sum(
+            positions[c].pnl(quotes[c].price or 0) * (rate if _is_hk(c) else 1.0)
+            for c in pos_codes
+        )
         elements.append({"tag": "hr"})
         elements.append({"tag": "div", "text": {"tag": "lark_md",
             "content": f"💰 持仓总市值：**{total_mval:,.0f}** 元　　📈 持仓总盈亏：{_color_pnl(total_pnl)}"}})

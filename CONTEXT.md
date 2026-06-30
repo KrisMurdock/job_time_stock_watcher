@@ -87,6 +87,21 @@ The user can configure which columns appear in the main data table. Available
 columns include the base set (code, name, price, change%, change amount, high,
 low) plus optional columns (volume, turnover, open, PE, market cap).
 
+### Privacy Mode (隐私模式)
+
+A toggle (`x` key) that disguises all stock data in the TUI as generic numbered
+items. When active:
+
+- Stock codes become `P001`, `P002`, … based on row order
+- Stock names become `Item 001`, `Item 002`, …
+- All numeric columns (price, change%, volume, P&L, etc.) show `—`
+- Column headers are replaced with generic labels (`T1`–`T16`)
+- The detail panel is blocked (Enter does nothing)
+- The status bar shows a lock icon (🔒) instead of up/down/flat counts
+- The portfolio bar hides all position data
+
+Privacy mode is **never persisted** — every launch starts with normal display.
+
 ---
 
 ## Data flow

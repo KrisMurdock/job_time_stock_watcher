@@ -145,6 +145,8 @@ class PortfolioBar(Static):
 class StockTable(DataTable):
     """DataTable specialised for stock quote display."""
 
+    privacy_mode: reactive[bool] = reactive(False)
+
     # Column keys (must match add_columns labels + on_mount)
     COL_DIR = " "
     COL_CODE = "代码"
@@ -188,6 +190,29 @@ class StockTable(DataTable):
         "总市值": "总市值",
     }
 
+    # Disguised labels when privacy mode is on
+    _PRIVACY_LABELS: dict[str, str] = {
+        " ": " ",
+        "代码": "ID",
+        "名称": "项目",
+        "现价": "T1",
+        "涨跌幅": "T2",
+        "涨跌额": "T3",
+        "最高": "T4",
+        "最低": "T5",
+        "持仓量": "T6",
+        "可用": "T7",
+        "成本价": "T8",
+        "市值": "T9",
+        "盈亏": "T10",
+        "盈亏比": "T11",
+        "今开": "T12",
+        "成交量": "T13",
+        "成交额": "T14",
+        "市盈率": "T15",
+        "总市值": "T16",
+    }
+
     def __init__(self) -> None:
         super().__init__(cursor_type="row", zebra_stripes=False)
         # Raw values for sort: row_key → {col_key: float|str}
@@ -198,9 +223,23 @@ class StockTable(DataTable):
         self._alert_codes: set[str] = set()
         # Positions: code → Position
         self._positions: dict[str, "Position"] = {}
+        # Privacy mode: row_key → 1-based disguise index
+        self._privacy_index: dict[str, int] = {}
 
     def set_positions(self, positions: dict[str, "Position"]) -> None:
         self._positions = positions
+
+    def watch_privacy_mode(self, value: bool) -> None:
+        """Re-render all rows and column labels when privacy mode toggles."""
+        labels = self._PRIVACY_LABELS if value else self._COLUMN_LABELS
+        for col_key, label in labels.items():
+            self._update_column_label(col_key, label)
+        # Rebuild privacy index based on ordered_rows
+        self._privacy_index = {}
+        if value and self.row_count > 0:
+            for i, row_key in enumerate(self.ordered_rows, start=1):
+                self._privacy_index[str(row_key)] = i
+        self.refresh()
 
     def on_mount(self) -> None:
         self.add_columns(
@@ -230,27 +269,55 @@ class StockTable(DataTable):
         row_key = quote.code
         pos = self._positions.get(row_key)
 
-        cells = [
-            self._fmt_dir(quote.direction, quote.code),
-            f"[bold]{quote.code}[/bold]",
-            quote.name or "—",
-            self._fmt_price(quote.price),
-            self._fmt_pct(quote.change_pct),
-            self._fmt_amount(quote.change_amount),
-            self._fmt_price(quote.high),
-            self._fmt_price(quote.low),
-            self._fmt_qty(pos),
-            self._fmt_qty_avail(pos),
-            self._fmt_price(pos.cost if pos and pos.is_valid else None),
-            self._fmt_mval(pos, quote.price),
-            self._fmt_pnl(pos, quote.price),
-            self._fmt_pnlp(pos, quote.price),
-            self._fmt_price(quote.open),
-            self._fmt_volume(quote.volume),
-            self._fmt_turnover(quote.turnover),
-            self._fmt_pe(quote.pe),
-            self._fmt_mcap(quote.market_cap),
-        ]
+        if self.privacy_mode:
+            idx = self._privacy_index.get(row_key, self.row_count + 1)
+            if row_key not in self._privacy_index:
+                self._privacy_index[row_key] = idx
+            pid = f"P{idx:03d}"
+            iname = f"Item {idx:03d}"
+            cells = [
+                f" [bold {FLAT_COLOR}]→[/]",
+                f"[bold]{pid}[/bold]",
+                iname,
+                "    —",
+                "      —",
+                "       —",
+                "    —",
+                "    —",
+                "     —",
+                "     —",
+                "    —",
+                "        —",
+                "       —",
+                "       —",
+                "    —",
+                "        —",
+                "        —",
+                "     —",
+                "       —",
+            ]
+        else:
+            cells = [
+                self._fmt_dir(quote.direction, quote.code),
+                f"[bold]{quote.code}[/bold]",
+                quote.name or "—",
+                self._fmt_price(quote.price),
+                self._fmt_pct(quote.change_pct),
+                self._fmt_amount(quote.change_amount),
+                self._fmt_price(quote.high),
+                self._fmt_price(quote.low),
+                self._fmt_qty(pos),
+                self._fmt_qty_avail(pos),
+                self._fmt_price(pos.cost if pos and pos.is_valid else None),
+                self._fmt_mval(pos, quote.price),
+                self._fmt_pnl(pos, quote.price),
+                self._fmt_pnlp(pos, quote.price),
+                self._fmt_price(quote.open),
+                self._fmt_volume(quote.volume),
+                self._fmt_turnover(quote.turnover),
+                self._fmt_pe(quote.pe),
+                self._fmt_mcap(quote.market_cap),
+            ]
 
         # Store raw values for sorting
         price = quote.price or 0.0
@@ -300,8 +367,9 @@ class StockTable(DataTable):
         label_key = str(col_key)
         # Strip sort arrows from label_key for robustness
         label_key = label_key.rstrip(" ▲▼")
-        # Restore all column labels
-        for col, label in self._COLUMN_LABELS.items():
+        # Restore all column labels from the active label set
+        active_labels = self._PRIVACY_LABELS if self.privacy_mode else self._COLUMN_LABELS
+        for col, label in active_labels.items():
             self._update_column_label(col, label)
 
         if self._sort_col == label_key:
@@ -329,8 +397,8 @@ class StockTable(DataTable):
 
         # Update sort indicator
         arrow = " ▼" if self._sort_reverse else " ▲"
-        self._COLUMN_LABELS[label_key] = self._COLUMN_LABELS[label_key].rstrip(" ▲▼") + arrow
-        self._update_column_label(label_key, self._COLUMN_LABELS[label_key])
+        active_labels[label_key] = active_labels[label_key].rstrip(" ▲▼") + arrow
+        self._update_column_label(label_key, active_labels[label_key])
 
     def _update_column_label(self, col_key: str, label: str) -> None:
         """Update a column header label in-place."""
@@ -735,6 +803,7 @@ class StockWatcherApp(App):
         Binding("s", "settings", "设置"),
         Binding("e", "export_csv", "导出CSV"),
         Binding("r", "manual_refresh", "刷新"),
+        Binding("x", "toggle_privacy", "隐私"),
         Binding("ctrl+n", "reload_config", "热加载"),
         Binding("q", "quit", "退出"),
         Binding("escape", "cancel_prompt", "取消", show=False),
@@ -808,6 +877,7 @@ class StockWatcherApp(App):
         self._alert_list_items: list[ListItem] = []
         self._search_results: list[SearchResult] = []
         self._stopped = False
+        self._privacy_mode: bool = False
 
         self._poll_loop()
         self._daily_summary_loop()
@@ -828,8 +898,18 @@ class StockWatcherApp(App):
     # Detail panel
     # ------------------------------------------------------------------
 
+    def action_toggle_privacy(self) -> None:
+        """Toggle privacy mode — disguise all stock data as generic items."""
+        self._privacy_mode = not self._privacy_mode
+        self._table.privacy_mode = self._privacy_mode
+        self._update_status()
+        mode_text = "🔒 隐私模式 开" if self._privacy_mode else "🔓 隐私模式 关"
+        self.notify(mode_text, severity="information")
+
     def action_show_detail(self) -> None:
         """Show detail modal for the highlighted stock."""
+        if self._privacy_mode:
+            return  # blocked in privacy mode
         key = self._table.get_highlighted_key()
         if key is None:
             return
@@ -976,7 +1056,7 @@ class StockWatcherApp(App):
             if self._chat_cfg and self._chat_cfg.is_configured:
                 from stock_watcher.chat_sender import build_summary_card, send_feishu_card
 
-                card = build_summary_card(self._latest_quotes, self._positions)
+                card = await build_summary_card(self._latest_quotes, self._positions)
                 ok = await send_feishu_card(self._chat_cfg, card)
                 if ok:
                     last_push = time.monotonic()
@@ -986,6 +1066,20 @@ class StockWatcherApp(App):
         sb.status = self._calendar.status_string()
         if self._backoff.any_backed_off:
             sb.status += f" 退避{self._backoff.max_delay:.0f}s"
+
+        if self._privacy_mode:
+            sb.status += "  🔒"
+            sb.total = len(self._queue.all_codes)
+            sb.up_count = 0
+            sb.down_count = 0
+            sb.flat_count = 0
+            # Also hide portfolio data
+            pb = self.query_one(PortfolioBar)
+            pb.total_mval = 0.0
+            pb.total_pnl = 0.0
+            pb.total_pnlp = 0.0
+            pb.pos_count = 0
+            return
 
         # Stats
         quotes = self._latest_quotes.values()
