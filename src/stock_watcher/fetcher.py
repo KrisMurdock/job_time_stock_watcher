@@ -107,7 +107,8 @@ def parse_tencent_response(code: str, text: str) -> StockQuote:
       3: current price
       4: yesterday close
       5: open
-      6: change amount (direct, when available)
+      6: volume (ignored)
+      31: change amount
       32: change percent
       33: high
       34: low
@@ -134,7 +135,7 @@ def parse_tencent_response(code: str, text: str) -> StockQuote:
         prev_close = _parse_float(fields[4])
         high = _parse_float(fields[33])
         low = _parse_float(fields[34])
-        change_amount = _parse_float(fields[6])
+        change_amount = _parse_float(fields[31]) if len(fields) > 31 else None
         change_pct = _parse_float(fields[32]) if len(fields) > 32 else None
 
         # Fallback: derive from price vs prev close if direct fields are None

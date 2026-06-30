@@ -8,6 +8,27 @@ import respx
 import httpx
 
 
+def _make_tencent_response(
+    name: str = "",
+    price: str = "",
+    prev_close: str = "",
+    change_amount: str = "",
+    change_pct: str = "",
+    high: str = "",
+    low: str = "",
+) -> str:
+    """Build a Tencent API response string with correct field indices."""
+    fields = [""] * 60
+    fields[1] = name
+    fields[3] = price
+    fields[4] = prev_close
+    fields[31] = change_amount
+    fields[32] = change_pct
+    fields[33] = high
+    fields[34] = low
+    return 'v_hk00700="' + "~".join(fields) + '";'
+
+
 @pytest.fixture
 def config_file():
     """Temporary config.yaml for testing."""
@@ -222,7 +243,9 @@ class TestSearchByName:
         mock_sina.get("https://qt.gtimg.cn/q=hk00700").mock(
             return_value=httpx.Response(
                 200,
-                text='v_hk00700="1~腾讯控股~00700~385.600~390.000~382.400~5.200~1.37~385.600~385.800~385.600~0~0~0~0~0~0~0~0~0~0~0~0~0~0~0~0~0~0~0~0~0~0~0~0~0~0~0~0~0~";',
+                text=_make_tencent_response(name="腾讯控股", price="385.600", prev_close="390.000",
+                                              change_amount="5.200", change_pct="1.37",
+                                              high="392.000", low="380.000"),
             )
         )
 
@@ -277,7 +300,9 @@ class TestSearchByName:
         mock_sina.get("https://qt.gtimg.cn/q=hk00700").mock(
             return_value=httpx.Response(
                 200,
-                text='v_hk00700="1~腾讯控股~00700~385.600~390.000~382.400~5.200~1.37~385.600~385.800~385.600~0~0~0~0~0~0~0~0~0~0~0~0~0~0~0~0~0~0~0~0~0~0~0~0~0~0~0~0~0~";',
+                text=_make_tencent_response(name="腾讯控股", price="385.600", prev_close="390.000",
+                                              change_amount="5.200", change_pct="1.37",
+                                              high="392.000", low="380.000"),
             )
         )
 

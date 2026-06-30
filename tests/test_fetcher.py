@@ -81,8 +81,8 @@ class TestParseTencentResponse:
     def test_parse_valid_hk_stock(self):
         """Real Tencent response format for HK stock.
         Field indices: 0=market, 1=name, 2=code,
-        3=price, 4=prev_close, 5=open, 6=change_amount(?), 7-31…,
-        32=change_pct, 33=high, 34=low
+        3=price, 4=prev_close, 5=open, 6=volume,
+        … 31=change_amount, 32=change_pct, 33=high, 34=low
         """
         # Build a 60-field ~-delimited string with known values at the right positions
         fields = [""] * 60
@@ -90,7 +90,7 @@ class TestParseTencentResponse:
         fields[3] = "385.600"        # price
         fields[4] = "390.000"        # prev_close
         fields[5] = "382.400"        # open
-        fields[6] = "5.200"          # (not used directly)
+        fields[31] = "5.200"         # change_amount
         fields[32] = "1.37"          # change_pct
         fields[33] = "392.000"       # high
         fields[34] = "380.000"       # low
@@ -105,19 +105,19 @@ class TestParseTencentResponse:
         assert quote.low == 380.00
 
     def test_parse_negative_change(self):
-        # price=380, prev_close=385, change_pct=-1.30, change_amount=-5.00
+        # price=380, prev_close=385, change_amount=-5.00, change_pct=-1.30
         fields = [""] * 60
         fields[1] = "腾讯控股"
         fields[3] = "380.000"
         fields[4] = "385.000"
         fields[5] = "375.000"
+        fields[31] = "-5.000"
         fields[32] = "-1.30"
         fields[33] = "390.000"
         fields[34] = "375.000"
         text = 'v_hk00700="' + "~".join(fields) + '";'
         quote = parse_tencent_response("hk00700", text)
         assert quote.change_pct == -1.30
-        # change_amount derived: 380-385 = -5.00
         assert quote.change_amount == -5.00
 
     def test_parse_empty_response(self):
@@ -323,6 +323,7 @@ class TestTencentFetcherIntegration:
         fields[1] = "腾讯控股"
         fields[3] = "385.600"
         fields[4] = "390.000"
+        fields[31] = "5.200"
         fields[32] = "1.37"
         fields[33] = "392.000"
         fields[34] = "380.000"
