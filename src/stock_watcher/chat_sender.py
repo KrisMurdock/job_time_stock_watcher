@@ -56,6 +56,12 @@ def _color_price(price: float | None, pct: float | None) -> str:
     return f"<font color='{color}'>**{price:.2f}**</font>"
 
 
+def _color_pnl(pnl: float) -> str:
+    """Return P&L string coloured red/green."""
+    color = "red" if pnl >= 0 else "green"
+    return f"<font color='{color}'>{pnl:+.0f}</font>"
+
+
 def _column_set(fields: list[tuple[str, str]]) -> dict:
     """Build a Feishu column_set element from (label, value) pairs."""
     columns = []
@@ -118,62 +124,73 @@ def build_summary_card(
     quotes: dict[str, StockQuote],
     positions: dict[str, "Position"] | None = None,
 ) -> dict:
-    """Build a Feishu interactive card for daily summary with positions."""
+    """Build a Feishu interactive card with two sections: 持仓信息 + 自选盯盘."""
     from stock_watcher.models import Position
 
     positions = positions or {}
-    has_positions = any(p.is_valid for p in positions.values())
     now_str = dt.datetime.now(dt.timezone(dt.timedelta(hours=8))).strftime(
         "%Y-%m-%d %H:%M"
     )
 
-    # Build row lines in monospace-friendly format
-    if has_positions:
-        header_line = "代码      名称      现价      涨跌幅      持仓     可用     成本      市值"
-        sep_line    = "────  ────  ──────  ──────  ────  ────  ──────  ────────"
-    else:
-        header_line = "代码      名称      现价      涨跌幅"
-        sep_line    = "────  ────  ──────  ──────"
+    # Split into holdings and watchlist-only
+    pos_codes = [c for c in sorted(quotes)
+                 if (p := positions.get(c)) and p.is_valid]
+    wl_codes = [c for c in sorted(quotes) if c not in pos_codes]
 
-    lines = [header_line, sep_line]
-
+    elements: list[dict] = []
     total_mval = 0.0
 
-    for code, q in sorted(quotes.items()):
-        pct_str = _color_pct(q.change_pct)
-        price = f"{q.price:>6.2f}" if q.price is not None else "     —"
-        name = (q.name or "—").ljust(4)[:4]
+    # Section 1: 持仓信息
+    if pos_codes:
+        elements.append({"tag": "div", "text": {"tag": "lark_md", "content": "📦 **持仓信息**"}})
+        hdr = "代码      名称    现价      涨跌幅     持仓   可用    成本      市值      盈亏"
+        sep = "────  ────  ──────  ──────  ────  ────  ──────  ────────  ────────"
+        lines = [hdr, sep]
 
-        row = f"{code:10s} {name:4s} {price}  {pct_str}"
+        for code in pos_codes:
+            q = quotes[code]
+            p = positions[code]
+            pct = _color_pct(q.change_pct)
+            price = f"{q.price:>6.2f}" if q.price is not None else "     —"
+            name = (q.name or "—")[:4].ljust(4)
 
-        if has_positions:
-            pos = positions.get(code)
-            if pos and pos.is_valid and q.price:
-                qty = f"{pos.quantity:>4d}"
-                avail = f"{pos.available:>4d}"
-                cost = f"{pos.cost:>6.2f}"
-                mval = pos.market_value(q.price)
-                mval_str = f"{mval:>8.0f}"
+            qty = f"{p.quantity:>4d}"
+            av  = f"{p.available:>4d}"
+            cst = f"{p.cost:>6.2f}"
+
+            if q.price:
+                mval = p.market_value(q.price)
+                mv = f"{mval:>8.0f}"
+                pnl_val = p.pnl(q.price)
+                pnl_s = _color_pnl(pnl_val)
                 total_mval += mval
-                row += f"  {qty}  {avail}  {cost}  {mval_str}"
             else:
-                row += "     —      —       —         —"
+                mv = "       —"
+                pnl_s = "       —"
 
-        lines.append(row)
+            lines.append(f"{code:10s} {name:4s} {price}  {pct}  {qty}  {av}  {cst}  {mv}  {pnl_s}")
 
-    # Stats block
-    if has_positions and total_mval > 0:
-        lines.append("")
-        lines.append(f"📊 **持仓总市值：{total_mval:,.0f} 元**")
+        lines.append(f"💰 **持仓总市值：{total_mval:,.0f} 元**")
+        lines.append(f"📈 **持仓总盈亏：{_color_pnl(sum(p.pnl(quotes[c].price or 0) for c in pos_codes))}**")
+        elements.append({"tag": "div", "text": {"tag": "lark_md", "content": "\n".join(lines)}})
 
-    elements = [
-        {
-            "tag": "div",
-            "text": {"tag": "lark_md", "content": "\n".join(lines) or "暂无数据"},
-        },
-        {"tag": "hr"},
-        _build_card_md_row("更新时间", now_str),
-    ]
+    # Section 2: 自选盯盘
+    if wl_codes:
+        elements.append({"tag": "hr"})
+        elements.append({"tag": "div", "text": {"tag": "lark_md", "content": "👀 **自选盯盘**"}})
+        lines2 = ["代码      名称    现价      涨跌幅", "────  ────  ──────  ──────"]
+
+        for code in wl_codes:
+            q = quotes[code]
+            pct = _color_pct(q.change_pct)
+            price = f"{q.price:>6.2f}" if q.price is not None else "     —"
+            name = (q.name or "—")[:4].ljust(4)
+            lines2.append(f"{code:10s} {name:4s} {price}  {pct}")
+
+        elements.append({"tag": "div", "text": {"tag": "lark_md", "content": "\n".join(lines2)}})
+
+    elements.append({"tag": "hr"})
+    elements.append(_build_card_md_row("更新时间", now_str))
 
     return {
         "msg_type": "interactive",
