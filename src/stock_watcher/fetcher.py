@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from dataclasses import dataclass
 from typing import Optional
 
 import httpx
@@ -239,8 +240,102 @@ def get_fetcher(code: str, request_config: Optional[RequestConfig] = None) -> Fe
 
 
 # ---------------------------------------------------------------------------
-# Helpers
+# Stock search (by name or partial code)
 # ---------------------------------------------------------------------------
+
+
+@dataclass
+class SearchResult:
+    """A single result from a stock name/code search."""
+
+    code: str
+    name: str
+    market: str  # "sh", "sz", "hk"
+
+
+async def search_stocks(
+    query: str,
+    request_config: Optional[RequestConfig] = None,
+) -> list[SearchResult]:
+    """Search stocks by name or partial code using the Sina suggest API.
+
+    Returns up to ~10 matching stocks with their codes and market prefixes.
+    """
+    if request_config is None:
+        request_config = RequestConfig()
+
+    url = f"https://suggest3.sinajs.cn/suggest/type=11,12,13,14,15&key={query}"
+
+    client = httpx.AsyncClient(timeout=request_config.timeout)
+    try:
+        headers = {
+            "User-Agent": request_config.get_random_ua(),
+            "Referer": "https://finance.sina.com.cn/",
+        }
+        resp = await client.get(url, headers=headers)
+        if resp.status_code != 200:
+            return []
+        return _parse_suggest_response(resp.text)
+    except httpx.TimeoutException:
+        return []
+    finally:
+        await client.aclose()
+
+
+def _parse_suggest_response(text: str) -> list[SearchResult]:
+    """Parse the Sina suggest API response.
+
+    Format: ``var suggestvalue="code1,name1,market1;code2,name2,market2;..."``
+
+    Market codes from Sina:
+      11 = Shanghai A-share  → prefix "sh"
+      12 = Shenzhen A-share → prefix "sz"
+      13 = HK stock          → prefix "hk" (approximate)
+    """
+    results: list[SearchResult] = []
+    try:
+        text = text.strip()
+        if not text:
+            return results
+
+        # Extract quoted portion
+        start = text.index('="') + 2
+        end = text.index('";', start) if '";' in text else len(text)
+        quoted = text[start:end]
+
+        if not quoted:
+            return results
+
+        for entry in quoted.split(";"):
+            parts = entry.split(",")
+            if len(parts) < 3:
+                continue
+            raw_code = parts[0].strip()
+            name = parts[1].strip()
+            market_id = parts[2].strip()
+
+            # Map Sina market ID to our prefix
+            prefix = _sina_market_to_prefix(market_id)
+            if prefix is None:
+                continue
+
+            code = f"{prefix}{raw_code}"
+            results.append(SearchResult(code=code, name=name, market=prefix))
+
+    except (ValueError, IndexError):
+        pass
+
+    return results
+
+
+def _sina_market_to_prefix(market_id: str) -> Optional[str]:
+    """Map Sina suggest market ID to our stock code prefix."""
+    mapping = {
+        "11": "sh",
+        "12": "sz",
+        "13": "hk",
+    }
+    return mapping.get(market_id)
 
 
 def _parse_float(s: str) -> Optional[float]:

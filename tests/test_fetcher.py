@@ -12,6 +12,7 @@ from stock_watcher.fetcher import (
     parse_sina_response,
     parse_tencent_response,
     FetchError,
+    search_stocks,
 )
 from stock_watcher.models import StockQuote
 from stock_watcher.config import RequestConfig
@@ -184,6 +185,92 @@ class TestFetchError:
     def test_non_retryable_http_400(self):
         e = FetchError("Bad request", code="sh000001", status_code=400)
         assert e.is_retryable is False
+
+
+# ---------------------------------------------------------------------------
+# search_stocks
+# ---------------------------------------------------------------------------
+
+
+class TestParseSuggestResponse:
+    """Parse Sina suggest API response."""
+
+    def test_parse_valid_response(self):
+        from stock_watcher.fetcher import _parse_suggest_response
+        text = 'var suggestvalue="000001,平安银行,12;00700,腾讯控股,13;600000,浦发银行,11";'
+        results = _parse_suggest_response(text)
+        assert len(results) == 3
+        assert results[0].code == "sz000001"
+        assert results[0].name == "平安银行"
+        assert results[0].market == "sz"
+        assert results[1].code == "hk00700"
+        assert results[1].name == "腾讯控股"
+        assert results[1].market == "hk"
+        assert results[2].code == "sh600000"
+        assert results[2].name == "浦发银行"
+        assert results[2].market == "sh"
+
+    def test_parse_empty_response(self):
+        from stock_watcher.fetcher import _parse_suggest_response
+        assert _parse_suggest_response("") == []
+
+    def test_parse_no_results(self):
+        from stock_watcher.fetcher import _parse_suggest_response
+        text = 'var suggestvalue="";'
+        assert _parse_suggest_response(text) == []
+
+    def test_parse_unknown_market_skipped(self):
+        from stock_watcher.fetcher import _parse_suggest_response
+        text = 'var suggestvalue="AAPL,苹果,99;000001,平安,12";'
+        results = _parse_suggest_response(text)
+        # Only the second entry (market 12 → sz) should be included
+        assert len(results) == 1
+        assert results[0].code == "sz000001"
+
+    def test_parse_malformed_returns_empty(self):
+        from stock_watcher.fetcher import _parse_suggest_response
+        assert _parse_suggest_response("garbage") == []
+
+
+class TestSearchStocks:
+    """Integration tests for search_stocks (mocked HTTP)."""
+
+    @pytest.mark.asyncio
+    async def test_search_returns_results(self, respx_mock):
+        respx_mock.get("https://suggest3.sinajs.cn/suggest/type=11,12,13,14,15&key=腾讯").mock(
+            return_value=httpx.Response(
+                200,
+                text='var suggestvalue="00700,腾讯控股,13;000001,平安银行,12";',
+            )
+        )
+        results = await search_stocks("腾讯")
+        assert len(results) == 2
+        assert results[0].code == "hk00700"
+        assert results[0].name == "腾讯控股"
+
+    @pytest.mark.asyncio
+    async def test_search_no_results(self, respx_mock):
+        respx_mock.get("https://suggest3.sinajs.cn/suggest/type=11,12,13,14,15&key=zzzz").mock(
+            return_value=httpx.Response(200, text='var suggestvalue="";')
+        )
+        results = await search_stocks("zzzz")
+        assert results == []
+
+    @pytest.mark.asyncio
+    async def test_search_http_error(self, respx_mock):
+        respx_mock.get("https://suggest3.sinajs.cn/suggest/type=11,12,13,14,15&key=test").mock(
+            return_value=httpx.Response(500)
+        )
+        results = await search_stocks("test")
+        assert results == []
+
+    @pytest.mark.asyncio
+    async def test_search_timeout(self, respx_mock):
+        respx_mock.get("https://suggest3.sinajs.cn/suggest/type=11,12,13,14,15&key=test").mock(
+            side_effect=httpx.TimeoutException("timeout")
+        )
+        results = await search_stocks("test")
+        assert results == []
 
 
 # ---------------------------------------------------------------------------

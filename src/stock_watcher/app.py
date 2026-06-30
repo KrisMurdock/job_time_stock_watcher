@@ -14,15 +14,16 @@ from textual.reactive import reactive
 from textual.widgets import (
     DataTable,
     Footer,
-    Header,
     Input,
     Label,
+    ListView,
+    ListItem,
     Static,
 )
 from textual.binding import Binding
 
 from stock_watcher.config import load_config, save_watchlist, RequestConfig
-from stock_watcher.fetcher import get_fetcher, FetchError
+from stock_watcher.fetcher import get_fetcher, FetchError, search_stocks, SearchResult
 from stock_watcher.models import StockQuote, Market
 from stock_watcher.scheduler import (
     PollQueue,
@@ -132,15 +133,21 @@ class StockTable(DataTable):
     def _fmt_pct(val: Optional[float]) -> str:
         if val is None:
             return "—"
+        if val == 0:
+            return "0.00%"
         sign = "+" if val > 0 else ""
-        return f"[{UP_COLOR if val > 0 else DOWN_COLOR if val < 0 else ''}]{sign}{val:.2f}%[/]"
+        color = UP_COLOR if val > 0 else DOWN_COLOR
+        return f"[{color}]{sign}{val:.2f}%[/]"
 
     @staticmethod
     def _fmt_amount(val: Optional[float]) -> str:
         if val is None:
             return "—"
+        if val == 0:
+            return "0.00"
         sign = "+" if val > 0 else ""
-        return f"[{UP_COLOR if val > 0 else DOWN_COLOR if val < 0 else ''}]{sign}{val:.2f}[/]"
+        color = UP_COLOR if val > 0 else DOWN_COLOR
+        return f"[{color}]{sign}{val:.2f}[/]"
 
 
 # ---------------------------------------------------------------------------
@@ -185,6 +192,19 @@ class StockWatcherApp(App):
         height: 1;
         margin: 0 0 1 0;
     }
+
+    #search_list {
+        dock: bottom;
+        height: auto;
+        max-height: 12;
+        background: $panel;
+        border: solid $accent;
+        visibility: hidden;
+    }
+
+    #search_list.visible {
+        visibility: visible;
+    }
     """
 
     BINDINGS = [
@@ -207,10 +227,11 @@ class StockWatcherApp(App):
         yield StockTable()
         yield Footer()
         yield Vertical(
-            Label("输入股票代码（如 sh000001 / hk00700），回车确认：", id="prompt_label"),
+            Label("输入股票代码或名称（如 sh000001 / 腾讯），回车确认：", id="prompt_label"),
             Input(id="prompt_input", placeholder="sh000001"),
             id="prompt_container",
         )
+        yield ListView(id="search_list")
 
     def on_mount(self) -> None:
         """Load config and start the polling engine."""
@@ -234,22 +255,24 @@ class StockWatcherApp(App):
         self._status_bar: StatusBar = self.query_one(StatusBar)
         self._prompt_container: Vertical = self.query_one("#prompt_container")
         self._prompt_input: Input = self.query_one("#prompt_input")
+        self._search_list: ListView = self.query_one("#search_list")
 
         # State
         self._prompt_mode: Optional[str] = None  # "add" or None
+        self._search_results: list[SearchResult] = []  # cached search results
         self._stopped = False
 
         # Kick off polling
         self._poll_loop()
 
     def check_action(self, action: str, parameters: tuple[object, ...]) -> bool | None:
-        """Block app-level bindings when the add-stock prompt is active.
+        """Block app-level bindings when the add-stock prompt or search list is active.
 
-        When the prompt Input is focused, keystrokes should go to the input,
-        not trigger app actions. Returning False disables the action.
+        When the prompt Input or search ListView is focused, keystrokes should go
+        to those widgets, not trigger app actions. Returning False disables the action.
         """
-        if self._prompt_mode is not None:
-            # Only allow escape (cancel) and the Input's own handling
+        if self._prompt_mode is not None or self._search_list.has_class("visible"):
+            # Only allow escape (cancel) and the focused widget's own handling
             if action in ("add_stock", "delete_stock", "manual_refresh", "quit"):
                 return False
         return True
@@ -342,35 +365,99 @@ class StockWatcherApp(App):
 
     def action_add_stock(self) -> None:
         """Open the add-stock prompt."""
+        if self._search_list.has_class("visible"):
+            # If search results are showing, close them first
+            self._hide_search_list()
+            return
+
         self._prompt_mode = "add"
         self._prompt_container.add_class("visible")
         self._prompt_input.value = ""
         self._prompt_input.focus()
 
     async def _on_add_submit(self, raw: str) -> None:
-        """Process add-stock submission."""
-        code = raw.strip().lower()
+        """Process add-stock submission — supports both code and name."""
+        text = raw.strip().lower()
 
-        # Validate
-        if not Market.is_valid_code(code):
-            self.notify(f"无效的股票代码: {code}\n格式: sh000001 / sz000001 / hk00700", severity="error")
+        if not text:
             return
 
+        # If search results are visible, user is selecting from the list
+        if self._search_list.has_class("visible"):
+            return  # handled by on_list_view_selected
+
+        # Path 1: Looks like a stock code (has known prefix) → validate + add
+        if Market.is_valid_code(text):
+            self._add_stock_by_code(text)
+            self.action_cancel_prompt()
+            return
+
+        # Path 2: Treat as name search
+        await self._search_and_show(text)
+
+    def _add_stock_by_code(self, code: str) -> None:
+        """Add a stock by its market-prefixed code."""
         if self._queue.has(code):
             self.notify(f"已在监控列表中: {code}", severity="warning")
             return
 
-        # Add to queue
         self._queue.add(code)
-
-        # Persist
         save_watchlist(self.config_path, self._queue.all_codes)
-
-        # Kick off an immediate fetch for the new stock
-        await self._fetch_one(code)
-
+        # Kick off an immediate fetch
+        asyncio.create_task(self._fetch_one(code))
         self.notify(f"已添加: {code}")
         self._update_status()
+
+    async def _search_and_show(self, query: str) -> None:
+        """Search stocks by name and show results in a ListView."""
+        self._prompt_container.remove_class("visible")
+
+        # Search
+        results = await search_stocks(query, self._request_cfg)
+
+        if not results:
+            self.notify(f"未找到与 '{query}' 相关的股票", severity="warning")
+            self.action_cancel_prompt()
+            return
+
+        if len(results) == 1:
+            # Single result → add directly
+            r = results[0]
+            self.notify(f"找到: {r.name} ({r.code})，正在添加...")
+            self._add_stock_by_code(r.code)
+            self.action_cancel_prompt()
+            return
+
+        # Multiple results → show selection list
+        self._search_results = results
+        self._search_list.clear()
+        for r in results:
+            self._search_list.append(
+                ListItem(
+                    Label(f"  {r.code}  |  {r.name}  |  {r.market.upper()}")
+                )
+            )
+        self._search_list.add_class("visible")
+        self._search_list.focus()
+
+    def on_list_view_selected(self, event: ListView.Selected) -> None:
+        """Handle selection from the search results list."""
+        if not self._search_list.has_class("visible"):
+            return
+
+        idx = self._search_list.index
+        if idx is not None and 0 <= idx < len(self._search_results):
+            r = self._search_results[idx]
+            self._add_stock_by_code(r.code)
+
+        self._hide_search_list()
+        self.action_cancel_prompt()
+
+    def _hide_search_list(self) -> None:
+        """Hide the search results list."""
+        self._search_list.remove_class("visible")
+        self._search_list.clear()
+        self._search_results = []
 
     # ------------------------------------------------------------------
     # Delete stock
@@ -394,16 +481,16 @@ class StockWatcherApp(App):
     # ------------------------------------------------------------------
 
     def action_cancel_prompt(self) -> None:
-        """Dismiss the add-stock prompt."""
+        """Dismiss the add-stock prompt and search results."""
         self._prompt_mode = None
         self._prompt_container.remove_class("visible")
+        self._hide_search_list()
         self.set_focus(None)
 
     def on_input_submitted(self, event: Input.Submitted) -> None:
         """Handle prompt input submission."""
         if self._prompt_mode == "add":
             asyncio.create_task(self._on_add_submit(event.value))
-        self.action_cancel_prompt()
 
 
 # ---------------------------------------------------------------------------

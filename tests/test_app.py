@@ -203,3 +203,96 @@ class TestManualRefresh:
             # Status should have been updated after refresh
             new_status = app._status_bar.status
             assert new_status != ""  # it was updated
+
+
+class TestSearchByName:
+    """Test adding stocks by name search."""
+
+    @pytest.mark.asyncio
+    async def test_name_search_shows_results(self, config_file, mock_sina):
+        """Entering a stock name should search and show a selection list."""
+        # Mock the suggest API
+        mock_sina.get("https://suggest3.sinajs.cn/suggest/type=11,12,13,14,15&key=腾讯").mock(
+            return_value=httpx.Response(
+                200,
+                text='var suggestvalue="00700,腾讯控股,13;600000,腾讯概念,11";',
+            )
+        )
+        # Also mock the fetch for when we select a result
+        mock_sina.get("https://qt.gtimg.cn/q=hk00700").mock(
+            return_value=httpx.Response(
+                200,
+                text='v_hk00700="1~腾讯控股~00700~385.600~390.000~382.400~5.200~1.37~385.600~385.800~385.600~0~0~0~0~0~0~0~0~0~0~0~0~0~0~0~0~0~0~0~0~0~0~0~0~0~0~0~0~0~";',
+            )
+        )
+
+        from stock_watcher.app import StockWatcherApp
+
+        app = StockWatcherApp(config_path=Path(config_file))
+
+        async with app.run_test() as pilot:
+            await pilot.press("a")
+            prompt_input = app.query_one("#prompt_input")
+            prompt_input.value = "腾讯"
+            await pilot.press("enter")
+            # Wait for search to complete
+            await pilot.pause(0.5)
+
+            # Search list should be visible with results
+            search_list = app.query_one("#search_list")
+            assert search_list.has_class("visible")
+            assert len(app._search_results) == 2
+
+    @pytest.mark.asyncio
+    async def test_name_search_no_results(self, config_file, mock_sina):
+        """Search with no results should show a warning."""
+        mock_sina.get("https://suggest3.sinajs.cn/suggest/type=11,12,13,14,15&key=zzzz").mock(
+            return_value=httpx.Response(200, text='var suggestvalue="";')
+        )
+
+        from stock_watcher.app import StockWatcherApp
+
+        app = StockWatcherApp(config_path=Path(config_file))
+
+        async with app.run_test() as pilot:
+            await pilot.press("a")
+            prompt_input = app.query_one("#prompt_input")
+            prompt_input.value = "zzzz"
+            await pilot.press("enter")
+            await pilot.pause(0.5)
+
+            # Search list should NOT be visible
+            search_list = app.query_one("#search_list")
+            assert not search_list.has_class("visible")
+
+    @pytest.mark.asyncio
+    async def test_name_search_single_result_adds_directly(self, config_file, mock_sina):
+        """Single search result should be auto-added without showing the list."""
+        mock_sina.get("https://suggest3.sinajs.cn/suggest/type=11,12,13,14,15&key=腾讯控股").mock(
+            return_value=httpx.Response(
+                200,
+                text='var suggestvalue="00700,腾讯控股,13";',
+            )
+        )
+        mock_sina.get("https://qt.gtimg.cn/q=hk00700").mock(
+            return_value=httpx.Response(
+                200,
+                text='v_hk00700="1~腾讯控股~00700~385.600~390.000~382.400~5.200~1.37~385.600~385.800~385.600~0~0~0~0~0~0~0~0~0~0~0~0~0~0~0~0~0~0~0~0~0~0~0~0~0~0~0~0~0~";',
+            )
+        )
+
+        from stock_watcher.app import StockWatcherApp
+
+        app = StockWatcherApp(config_path=Path(config_file))
+
+        async with app.run_test() as pilot:
+            await pilot.press("a")
+            prompt_input = app.query_one("#prompt_input")
+            prompt_input.value = "腾讯控股"
+            await pilot.press("enter")
+            await pilot.pause(0.5)
+
+            # Should be added directly
+            assert app._queue.has("hk00700")
+            # Search list should NOT be showing
+            assert not app.query_one("#search_list").has_class("visible")
