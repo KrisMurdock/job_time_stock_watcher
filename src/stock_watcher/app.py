@@ -108,6 +108,34 @@ class StatusBar(Static):
         return "  │  ".join(parts)
 
 
+class PortfolioBar(Static):
+    """Bottom bar showing total portfolio stats."""
+
+    total_mval: reactive[float] = reactive(0.0)
+    total_pnl: reactive[float] = reactive(0.0)
+    total_pnlp: reactive[float] = reactive(0.0)
+    pos_count: reactive[int] = reactive(0)
+
+    def watch_total_mval(self, _: float) -> None:
+        self.refresh()
+
+    def render(self) -> str:
+        if self.pos_count == 0:
+            return "  [dim]暂无持仓[/]"
+
+        pnl = self.total_pnl
+        pnlp = self.total_pnlp
+        c = UP_COLOR if pnl >= 0 else DOWN_COLOR
+        sign = "+" if pnl >= 0 else ""
+
+        return (
+            f"  📦 [bold]持仓 {self.pos_count} 只[/bold]  │  "
+            f"💰 总市值 [bold]{self.total_mval:,.0f}[/bold] 元  │  "
+            f"📈 总盈亏 [{c}]{sign}{pnl:+,.0f}[/]  "
+            f"([{c}]{sign}{pnlp:.2f}%[/])"
+        )
+
+
 # ---------------------------------------------------------------------------
 # Stock table
 # ---------------------------------------------------------------------------
@@ -611,6 +639,14 @@ class StockWatcherApp(App):
         padding: 0 1;
     }
 
+    PortfolioBar {
+        dock: bottom;
+        height: 1;
+        background: #161b22;
+        color: #c9d1d9;
+        padding: 0 1;
+    }
+
     StockTable {
         height: 1fr;
         border: solid #30363d;
@@ -715,6 +751,7 @@ class StockWatcherApp(App):
     def compose(self) -> ComposeResult:
         yield StatusBar()
         yield StockTable()
+        yield PortfolioBar()
         yield Footer()
         yield Vertical(
             Label("输入股票代码或名称（如 sh000001 / 腾讯），回车确认：", id="prompt_label"),
@@ -957,6 +994,28 @@ class StockWatcherApp(App):
         sb.up_count = sum(1 for q in quotes if q.direction == "up")
         sb.down_count = sum(1 for q in quotes if q.direction == "down")
         sb.flat_count = sb.total - sb.up_count - sb.down_count
+
+        # Portfolio stats
+        pb = self.query_one(PortfolioBar)
+        total_mval = 0.0
+        total_pnl = 0.0
+        total_cost = 0.0
+        pos_count = 0
+        for code, pos in self._positions.items():
+            if not pos.is_valid:
+                continue
+            q = self._latest_quotes.get(code)
+            price = q.price if (q and q.price) else None
+            if price is None:
+                continue
+            pos_count += 1
+            total_mval += pos.market_value(price)
+            total_pnl += pos.pnl(price)
+            total_cost += pos.cost * pos.quantity
+        pb.total_mval = total_mval
+        pb.total_pnl = total_pnl
+        pb.total_pnlp = (total_pnl / total_cost * 100) if total_cost > 0 else 0.0
+        pb.pos_count = pos_count
 
     # ------------------------------------------------------------------
     # Config hot-reload
