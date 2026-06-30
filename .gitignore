@@ -10,3 +10,5 @@ venv/
 htmlcov/
 .pytest_cache/
 .ruff_cache/
+reasonix.toml
+config.yaml
