@@ -171,7 +171,7 @@ def build_summary_card(
             lines.append(f"{code:10s} {name:4s} {price}  {pct}  {qty}  {av}  {cst}  {mv}  {pnl_s}")
 
         lines.append(f"💰 **持仓总市值：{total_mval:,.0f} 元**")
-        lines.append(f"📈 **持仓总盈亏：{_color_pnl(sum(p.pnl(quotes[c].price or 0) for c in pos_codes))}**")
+        lines.append(f"📈 **持仓总盈亏：{_color_pnl(sum(positions[c].pnl(quotes[c].price or 0) for c in pos_codes))}**")
         elements.append({"tag": "div", "text": {"tag": "lark_md", "content": "\n".join(lines)}})
 
     # Section 2: 自选盯盘
