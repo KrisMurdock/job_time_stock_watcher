@@ -179,12 +179,21 @@ def load_config(path: Path) -> AppConfig:
     """Load configuration from a YAML file.
 
     Raises FileNotFoundError if the file does not exist.
+    Positions are loaded from a separate positions.yaml next to the config.
     """
     if not path.exists():
         raise FileNotFoundError(f"Config file not found: {path}")
 
     with open(path, "r", encoding="utf-8") as fh:
         raw = yaml.safe_load(fh) or {}
+
+    # Merge positions from positions.yaml if it exists
+    pos_path = path.with_name("positions.yaml")
+    if pos_path.exists():
+        with open(pos_path, "r", encoding="utf-8") as fh:
+            pos_data = yaml.safe_load(fh) or {}
+        if isinstance(pos_data, dict):
+            raw["positions"] = pos_data
 
     return AppConfig.from_dict(raw)
 
@@ -245,33 +254,12 @@ def save_alerts(path: Path, alerts: list[AlertRule]) -> None:
 
 
 def save_positions(path: Path, positions: dict[str, "Position"]) -> None:
-    """Persist positions to config.yaml, preserving comments."""
-    key = "positions"
-    if not positions:
-        new_block = f"{key}: {{}}\n"
-    else:
-        lines = [f"{key}:"]
-        for code, pos in positions.items():
-            lines.append(f"  {code}:")
-            lines.append(f"    cost: {pos.cost}")
-            lines.append(f"    quantity: {pos.quantity}")
-        new_block = "\n".join(lines) + "\n"
+    """Persist positions to a standalone positions.yaml next to config."""
+    pos_path = path.with_name("positions.yaml")
 
-    if path.exists():
-        text = path.read_text(encoding="utf-8")
-    else:
-        text = ""
+    data: dict[str, dict[str, float | int]] = {}
+    for code, pos in positions.items():
+        data[code] = pos.to_config()  # type: ignore[assignment]
 
-    pattern = re.compile(
-        rf"^{re.escape(key)}:.*(?:\n(?:[ \t]+\S.*))*",
-        re.MULTILINE,
-    )
-
-    if pattern.search(text):
-        text = pattern.sub(new_block, text)
-    else:
-        if text and not text.endswith("\n"):
-            text += "\n"
-        text += "\n" + new_block
-
-    path.write_text(text, encoding="utf-8")
+    with open(pos_path, "w", encoding="utf-8") as fh:
+        yaml.safe_dump(data, fh, default_flow_style=False, allow_unicode=True)
