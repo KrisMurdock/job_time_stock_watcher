@@ -16,24 +16,28 @@ from textual import work
 from textual.app import App, ComposeResult
 from textual.containers import Vertical
 from textual.reactive import reactive
+from textual.screen import ModalScreen
 from textual.widgets import (
     DataTable,
     Footer,
     Input,
     Label,
-    ListView,
     ListItem,
+    ListView,
+    RichLog,
     Static,
 )
 from textual.binding import Binding
 
-from stock_watcher.config import load_config, save_watchlist, save_alerts, save_positions, RequestConfig
+from stock_watcher.config import load_config, save_watchlist, save_alerts, save_positions, AppConfig
 from stock_watcher.fetcher import get_fetcher, FetchError, search_stocks, SearchResult
 from stock_watcher.models import StockQuote, Market, AlertRule, AlertType, Position
 from stock_watcher.scheduler import (
     PollQueue,
     TradingCalendar,
     MarketBackoffManager,
+    _now_cst,
+    _is_weekday,
 )
 
 
@@ -259,6 +263,8 @@ class StockTable(DataTable):
     def _toggle_sort(self, col_key: str) -> None:
         """Toggle sort on a column: asc → desc → unsort."""
         label_key = str(col_key)
+        # Strip sort arrows from label_key for robustness
+        label_key = label_key.rstrip(" ▲▼")
         # Restore all column labels
         for col, label in self._COLUMN_LABELS.items():
             self._update_column_label(col, label)
@@ -294,7 +300,7 @@ class StockTable(DataTable):
     def _update_column_label(self, col_key: str, label: str) -> None:
         """Update a column header label in-place."""
         for column in self.columns.values():
-            if str(column.label) == col_key:
+            if str(column.key) == col_key:
                 column.label = label
                 return
 
@@ -416,9 +422,6 @@ class StockTable(DataTable):
 # Detail screen
 # ---------------------------------------------------------------------------
 
-from textual.screen import ModalScreen
-from textual.widgets import RichLog
-
 
 class DetailModal(ModalScreen[None]):
     """Modal popup showing extended info for a single stock."""
@@ -456,7 +459,7 @@ class DetailModal(ModalScreen[None]):
 
         # A-share order book
         if q.code.startswith(("sh", "sz")):
-            log.write(f"\n  [bold]五档盘口[/]")
+            log.write("\n  [bold]五档盘口[/]")
             log.write(f"  {'卖5':>4}  {self._fmt_ob(q.ask_prices, 4)}  {self._fmt_ob_vol(q.ask_volumes, 4)}")
             log.write(f"  {'卖4':>4}  {self._fmt_ob(q.ask_prices, 3)}  {self._fmt_ob_vol(q.ask_volumes, 3)}")
             log.write(f"  {'卖3':>4}  {self._fmt_ob(q.ask_prices, 2)}  {self._fmt_ob_vol(q.ask_volumes, 2)}")
@@ -471,12 +474,12 @@ class DetailModal(ModalScreen[None]):
 
         # HK: PE + market cap
         if q.code.startswith("hk"):
-            log.write(f"\n  [bold]港股数据[/]")
+            log.write("\n  [bold]港股数据[/]")
             log.write(f"  市盈率  {q.pe or '—':>8}  总市值  {self._fmt_mcap_val(q.market_cap)}")
 
         # Position
         if pos and pos.is_valid:
-            log.write(f"\n  [bold]持仓[/]")
+            log.write("\n  [bold]持仓[/]")
             log.write(f"  成本  {pos.cost:.2f}  数量  {pos.quantity}  市值  {pos.market_value(price):.2f}")
             pnl = pos.pnl(price)
             pnlp = pos.pnl_pct(price)
@@ -486,14 +489,14 @@ class DetailModal(ModalScreen[None]):
         # Alerts for this stock
         stock_alerts = [a for a in self._alert_rules if a.code == q.code]
         if stock_alerts:
-            log.write(f"\n  [bold]告警规则[/]")
+            log.write("\n  [bold]告警规则[/]")
             for a in stock_alerts:
                 status = "已触发" if a.triggered else "待触发"
                 log.write(f"  {a.alert_type.value:14s}  {a.value:>8.2f}  [{status}]")
 
         # Recent history
         if self._alert_history:
-            log.write(f"\n  [bold]最近告警[/]")
+            log.write("\n  [bold]最近告警[/]")
             for line in self._alert_history[:5]:
                 try:
                     e = json.loads(line)
@@ -503,28 +506,34 @@ class DetailModal(ModalScreen[None]):
                     continue
                 log.write(f"  {e.get('ts', '')[-8:] or '??:??'}  {e.get('type', '')} → {e.get('price', '—')}")
 
-        log.write(f"\n  [dim]按 Enter/Esc 关闭[/dim]")
+        log.write("\n  [dim]按 Enter/Esc 关闭[/dim]")
 
     @staticmethod
     def _fmt_vol(val: Optional[float]) -> str:
-        if val is None: return "—"
-        if val >= 1e8: return f"{val / 1e8:.2f}亿"
-        if val >= 1e4: return f"{val / 1e4:.2f}万"
+        if val is None:
+            return "—"
+        if val >= 1e8:
+            return f"{val / 1e8:.2f}亿"
+        if val >= 1e4:
+            return f"{val / 1e4:.2f}万"
         return f"{val:.0f}"
 
     @staticmethod
     def _fmt_turn(val: Optional[float]) -> str:
-        if val is None: return "—"
+        if val is None:
+            return "—"
         return f"{val / 1e8:.2f}亿"
 
     @staticmethod
     def _fmt_mcap_val(val: Optional[float]) -> str:
-        if val is None: return "—"
+        if val is None:
+            return "—"
         return f"{val:.0f}亿"
 
     @staticmethod
     def _fmt_ob(prices: list, idx: int) -> str:
-        if idx < len(prices): return f"{prices[idx]:>8.2f}"
+        if idx < len(prices):
+            return f"{prices[idx]:>8.2f}"
         return "       —"
 
     @staticmethod
@@ -562,7 +571,7 @@ class SettingsModal(ModalScreen[None]):
         log.write(f"  退避上限(秒)       {self._cfg.backoff.max_delay}")
         log.write(f"  退避乘数           {self._cfg.backoff.multiplier}")
         log.write(f"  告警音效命令       {self._cfg.alert_sound_command or '(空)'}")
-        log.write(f"\n  [dim]按 Esc 关闭，编辑 config.yaml 后自动热加载[/dim]")
+        log.write("\n  [dim]按 Esc 关闭，编辑 config.yaml 后自动热加载[/dim]")
 
     def on_key(self, event) -> None:
         if event.key in ("enter", "escape"):
@@ -730,6 +739,7 @@ class StockWatcherApp(App):
         # Alert rules loaded from config
         self._alerts: list[AlertRule] = list(self._cfg.alerts)
         self._positions: dict[str, Position] = dict(self._cfg.positions)
+        self._email_cfg = self._cfg.email
         self._update_alert_codes()
         self._table.set_positions(self._positions)
 
@@ -741,6 +751,7 @@ class StockWatcherApp(App):
         self._stopped = False
 
         self._poll_loop()
+        self._daily_summary_loop()
 
     # ------------------------------------------------------------------
     # Column sort
@@ -749,7 +760,7 @@ class StockWatcherApp(App):
     def on_data_table_header_selected(self, event: DataTable.HeaderSelected) -> None:
         """Handle click on a column header → toggle sort."""
         if event.data_table is self._table:
-            col = event.column_key
+            col = str(event.column_key)
             self._table._toggle_sort(col)
         event.stop()
 
@@ -873,6 +884,45 @@ class StockWatcherApp(App):
             self._table.add_row(*cells, key=code)
 
         self._update_status()
+
+    # ------------------------------------------------------------------
+    # Daily summary email
+    # ------------------------------------------------------------------
+
+    @work(exclusive=False)
+    async def _daily_summary_loop(self) -> None:
+        """Check once a minute and send daily summary after all markets close."""
+        _sent_today: str = ""  # date string of last sent summary
+
+        while not self._stopped:
+            await asyncio.sleep(60)
+
+            if not self._email_cfg or not self._email_cfg.is_configured:
+                continue
+            if not self._latest_quotes:
+                continue
+
+            now = _now_cst()
+            today_str = now.strftime("%Y-%m-%d")
+            if _sent_today == today_str:
+                continue
+
+            # Only send summary on weekdays, after the LAST market closes.
+            # US after-hours ends at 08:00/09:00 CST, which is the final close of the day.
+            if not _is_weekday(now):
+                continue
+
+            # All markets have closed for the day: US after-hours is 08:00/09:00 CST.
+            # We send the summary at 09:05 CST (5-min buffer).
+            if not (now.hour == 9 and now.minute >= 5 and now.minute < 10):
+                continue
+
+            from stock_watcher.email_sender import build_summary_email, send_email
+
+            subject, html = build_summary_email(self._latest_quotes)
+            ok = await send_email(self._email_cfg, subject, html)
+            if ok:
+                _sent_today = today_str
 
     def _update_status(self) -> None:
         sb = self._status_bar
@@ -1171,7 +1221,7 @@ class StockWatcherApp(App):
             label = f"{alert.code:12s} {name:10s}  {alert.alert_type.value:14s}  {alert.value:>8.2f}  [{status}]"
             items.append(ListItem(Label(label)))
         if not items:
-            self.notify("暂无告警规则", severity="info")
+            self.notify("暂无告警规则", severity="information")
             return
 
         self._alert_list_items = items
@@ -1268,7 +1318,7 @@ class StockWatcherApp(App):
         """Show recent alert history in a popup."""
         lines = self._read_alert_history()
         if not lines:
-            self.notify("暂无告警历史", severity="info")
+            self.notify("暂无告警历史", severity="information")
             return
 
         items: list[ListItem] = []
@@ -1295,11 +1345,11 @@ class StockWatcherApp(App):
         self.notify("告警历史（最新200条），Esc 关闭", timeout=3)
 
     def _fire_alert(self, alert: AlertRule, quote: StockQuote) -> None:
-        """Fire an alert: TUI notification + system notification + sound."""
+        """Fire an alert: TUI notification + system notification + sound + email."""
         msg = f"🚨 {quote.name or alert.code} {alert.describe()}！现价 {quote.price:.2f}"
         self.notify(msg, severity="warning", timeout=10)
 
-        # System notification (non-blocking)
+        # System notification
         try:
             subprocess.run(
                 ["notify-send", "📈 Stock Watcher 告警", msg],
@@ -1307,26 +1357,24 @@ class StockWatcherApp(App):
                 capture_output=True,
             )
         except Exception:
-            pass  # notify-send not available — that's fine
+            pass
 
-        # Terminal bell — audible if terminal supports it
+        # Terminal bell
         try:
             sys.stdout.write("\a")
             sys.stdout.flush()
         except Exception:
             pass
 
-        # OSC escape sequences for native desktop notifications.
-        # Supported by: Windows Terminal, iTerm2, WezTerm, kitty.
-        # Harmless no-op when the terminal doesn't understand them.
+        # OSC escape sequences
         try:
-            sys.stdout.write(f"\x1b]9;{msg}\x07")   # iTerm2 / WezTerm / Windows Terminal
-            sys.stdout.write(f"\x1b]99;;{msg}\x07")  # kitty
+            sys.stdout.write(f"\x1b]9;{msg}\x07")
+            sys.stdout.write(f"\x1b]99;;{msg}\x07")
             sys.stdout.flush()
         except Exception:
             pass
 
-        # Optional custom sound command (e.g. "ffplay alarm.mp3")
+        # Custom sound command
         cmd = self._cfg.alert_sound_command.strip()
         if cmd:
             try:
@@ -1338,6 +1386,18 @@ class StockWatcherApp(App):
                 )
             except Exception:
                 pass
+
+        # Email notification (non-blocking, fire-and-forget)
+        if self._email_cfg and self._email_cfg.is_configured:
+            from stock_watcher.email_sender import build_alert_email, send_email
+
+            subject, html = build_alert_email(
+                alert.code, quote.name or alert.code, alert.describe(), quote.price or 0
+            )
+            # Launch as background task so SMTP failure doesn't block the UI
+            asyncio.create_task(
+                send_email(self._email_cfg, subject, html)
+            )
 
         # Log to alert history
         self._log_alert_history(alert, quote)

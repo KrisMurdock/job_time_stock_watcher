@@ -6,7 +6,7 @@ import random
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, Optional
 
 import yaml
 
@@ -63,6 +63,49 @@ class RequestConfig:
         return cls(timeout=timeout)
 
 
+# ---------------------------------------------------------------------------
+# EmailConfig
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class EmailConfig:
+    """SMTP email notification configuration (163 / QQ / Gmail etc.)."""
+
+    smtp_host: str = "smtp.163.com"
+    smtp_port: int = 587
+    username: str = ""        # full email address
+    password: str = ""        # SMTP auth code (NOT login password)
+    from_addr: str = ""
+    to_addr: str = ""         # recipient(s), comma-separated
+
+    @property
+    def is_configured(self) -> bool:
+        """Return True if minimum required fields are filled."""
+        return bool(self.smtp_host and self.username and self.password and self.to_addr)
+
+    @classmethod
+    def from_dict(cls, d: dict[str, Any]) -> "EmailConfig":
+        return cls(
+            smtp_host=str(d.get("smtp_host", "smtp.163.com")),
+            smtp_port=int(d.get("smtp_port", 587)),
+            username=str(d.get("username", "")),
+            password=str(d.get("password", "")),
+            from_addr=str(d.get("from", "")),
+            to_addr=str(d.get("to", "")),
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "smtp_host": self.smtp_host,
+            "smtp_port": self.smtp_port,
+            "username": self.username,
+            "password": self.password,
+            "from": self.from_addr,
+            "to": self.to_addr,
+        }
+
+
 @dataclass
 class AppConfig:
     """Top-level application configuration."""
@@ -74,11 +117,13 @@ class AppConfig:
     alerts: list[AlertRule] = field(default_factory=list)
     proxies: list[str] = field(default_factory=list)
     positions: dict[str, Position] = field(default_factory=dict)
-    alert_sound_command: str = ""  # shell command to play alert sound; empty = bell only
+    alert_sound_command: str = ""
+    email: Optional[EmailConfig] = None
 
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> "AppConfig":
         pos_raw = d.get("positions", {}) or {}
+        email_raw = d.get("email")
         return cls(
             poll_interval=float(d.get("poll_interval", 2.5)),
             backoff=BackoffConfig.from_dict(d.get("backoff", {})),
@@ -88,6 +133,7 @@ class AppConfig:
             proxies=[str(x) for x in d.get("proxies", [])],
             positions={k: Position.from_config(v) for k, v in pos_raw.items()},
             alert_sound_command=str(d.get("alert_sound_command", "")),
+            email=EmailConfig.from_dict(email_raw) if email_raw else None,
         )
 
 

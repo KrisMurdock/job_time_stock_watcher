@@ -330,3 +330,108 @@ class TestSearchByName:
             assert app._queue.has("hk00700")
             # Search list should NOT be showing
             assert not app.query_one("#search_list").has_class("visible")
+
+
+# ---------------------------------------------------------------------------
+# Column sort regression
+# ---------------------------------------------------------------------------
+
+class TestColumnSort:
+    """Regression tests for column header click → sort."""
+
+    def test_toggle_sort_with_clean_key(self):
+        """_toggle_sort should work with clean column keys."""
+        from stock_watcher.app import StockTable
+        from unittest.mock import MagicMock, patch
+
+        table = StockTable()
+        table.columns = MagicMock()
+        table.sort = MagicMock()
+
+        # Seed some raw data
+        table._raw = {"sh000001": {"涨跌幅": 1.5, "现价": 3250.0}}
+
+        # First click: sort ascending
+        table._toggle_sort("涨跌幅")
+        assert table._sort_col == "涨跌幅"
+        assert table._sort_reverse is False
+        table.sort.assert_called_once()
+
+    def test_toggle_sort_with_arrow_suffix_is_safe(self):
+        """_toggle_sort should handle arrow-suffixed keys (like '涨跌幅 ▲')
+        by treating them as the base column key."""
+        from stock_watcher.app import StockTable
+        from unittest.mock import MagicMock
+
+        table = StockTable()
+        table.columns = MagicMock()
+        table.sort = MagicMock()
+        table._raw = {"sh000001": {"涨跌幅": 1.5, "现价": 3250.0}}
+
+        # Set prior state: sorted on '涨跌幅' ascending
+        table._sort_col = "涨跌幅"
+        table._sort_reverse = False
+        table._COLUMN_LABELS["涨跌幅"] = "涨跌幅 ▲"
+
+        # Click again with arrow-suffixed key (simulating event.label.plain)
+        table._toggle_sort("涨跌幅 ▲")
+
+        # Should correctly recognize it as second click → reverse
+        assert table._sort_col == "涨跌幅"
+        assert table._sort_reverse is True
+
+    def test_toggle_sort_third_click_unsorts(self):
+        """Third click on same column should clear sort."""
+        from stock_watcher.app import StockTable
+        from unittest.mock import MagicMock
+
+        table = StockTable()
+        table.columns = MagicMock()
+        table.sort = MagicMock()
+        table._raw = {"sh000001": {"涨跌幅": 1.5, "现价": 3250.0}}
+
+        # Simulate: already sorted descending
+        table._sort_col = "涨跌幅"
+        table._sort_reverse = True
+        table._COLUMN_LABELS["涨跌幅"] = "涨跌幅 ▼"
+
+        # Third click → unsort
+        table._toggle_sort("涨跌幅")
+
+        assert table._sort_col is None
+        assert table._sort_reverse is False
+
+    def test_on_header_selected_uses_column_key(self):
+        """Verify the fix: on_data_table_header_selected passes
+        event.column_key (not event.label.plain)."""
+        from stock_watcher.app import StockWatcherApp, StockTable
+        from textual.widgets import DataTable
+        from unittest.mock import MagicMock, PropertyMock
+
+        # Create a mock event
+        event = MagicMock(spec=DataTable.HeaderSelected)
+        type(event).column_key = PropertyMock(return_value="涨跌幅")
+        type(event).label = PropertyMock()
+        event.label.plain = "涨跌幅 ▲"  # label has arrow after sort
+
+        table = StockTable()
+        table.columns = MagicMock()
+        table.sort = MagicMock()
+        table._raw = {"sh000001": {"涨跌幅": 1.5, "现价": 3250.0}}
+
+        # Add arrow to label to simulate prior sort state
+        table._sort_col = "涨跌幅"
+        table._sort_reverse = False
+        table._COLUMN_LABELS["涨跌幅"] = "涨跌幅 ▲"
+
+        # Simulate the app handler
+        event.data_table = table
+        app = MagicMock(spec=StockWatcherApp)
+        app._table = table
+
+        # Call the handler as the real code would
+        StockWatcherApp.on_data_table_header_selected(app, event)
+
+        # After fix: should use column_key ("涨跌幅") → second click → reverse
+        assert table._sort_col == "涨跌幅"
+        assert table._sort_reverse is True
